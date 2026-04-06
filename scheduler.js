@@ -96,5 +96,21 @@ console.log('║  Overnight    → Idle                                     ║'
 console.log('╚══════════════════════════════════════════════════════════╝');
 console.log(`\nCurrent time: ${etTimeString()} ET — ${timeLabel()}\n`);
 
+// Auto-backup to GitHub on startup
+const { execSync } = require('child_process');
+function gitBackup() {
+  try {
+    execSync('git add -A', { cwd: __dirname, stdio: 'pipe' });
+    execSync(`git commit -m "Auto-backup ${new Date().toISOString().slice(0,10)}"`, { cwd: __dirname, stdio: 'pipe' });
+    execSync('git push origin master', { cwd: __dirname, stdio: 'pipe' });
+    console.log('[Backup] Code pushed to GitHub ✓');
+  } catch(e) {
+    const msg = e.stderr?.toString() || e.message;
+    if (msg.includes('nothing to commit')) console.log('[Backup] No changes to backup');
+    else console.warn('[Backup] Git error:', msg.slice(0, 100));
+  }
+}
+gitBackup();
+
 init().catch(console.error);
 setInterval(() => tick().catch(console.error), 60 * 1000);
