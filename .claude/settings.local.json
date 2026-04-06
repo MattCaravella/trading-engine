@@ -7,7 +7,8 @@
       "Bash(node scheduler.js)",
       "Bash(git --version)",
       "Bash(gh --version)",
-      "Bash(gh auth:*)"
+      "Bash(gh auth:*)",
+      "Bash(node -e \":*)"
     ]
   }
 }
