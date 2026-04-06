@@ -1,0 +1,12 @@
+# Credentials — NEVER commit these
+.env
+
+# Trade history (large, personal data — kept local)
+trade_history/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db

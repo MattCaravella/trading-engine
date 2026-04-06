@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node daily_summary.js)",
+      "Bash(node \"C:/Users/Matth/Desktop/Trading/daily_summary.js\")",
+      "Bash(cmd /c \"dir C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\"\")",
+      "Bash(node scheduler.js)",
+      "Bash(git --version)",
+      "Bash(gh --version)",
+      "Bash(gh auth:*)"
+    ]
+  }
+}
