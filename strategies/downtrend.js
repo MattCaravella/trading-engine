@@ -1,6 +1,5 @@
 const { getBars, closes, rsi, sma } = require('../data/prices');
-
-const UNIVERSE = ['AAPL','MSFT','GOOGL','AMZN','META','NVDA','TSLA','JPM','BAC','AMD','INTC','QCOM','MU','CSCO','ADBE','CRM','ORCL','IBM','XOM','CVX','COP','PFE','JNJ','MRK','UNH','LLY','ABBV','BA','CAT','GE','MMM','WMT','TGT','COST','HD','LOW','PLTR','COIN','SOFI','RIVN','PLUG','F','GM'];
+const { UNIVERSE } = require('../data/universe');
 
 function countDowntrendDays(cls) {
   let count = 0;

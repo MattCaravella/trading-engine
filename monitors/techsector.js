@@ -22,13 +22,14 @@ fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
 const AV_KEY = process.env.ALPHA_VANTAGE_KEY;
 const AV_BASE = 'https://www.alphavantage.co/query';
 
-// Tech universe — top 40 tickers we want to watch
-const TECH_UNIVERSE = [
-  'AAPL','MSFT','NVDA','META','GOOGL','AMZN','TSLA','AVGO','ORCL','AMD',
-  'QCOM','TXN','INTC','AMAT','MU','LRCX','KLAC','NOW','CRM','SNOW',
-  'PLTR','UBER','NET','PANW','CRWD','ZS','ADBE','INTU','IBM','HPE',
-  'CSCO','DELL','ANET','MRVL','SMCI','WDAY','DDOG','GTLB','TTD','HUBS'
-];
+// Tech & growth universe — pulled from shared universe
+const { UNIVERSE } = require('../data/universe');
+const TECH_SECTORS = new Set(['AAPL','MSFT','NVDA','META','GOOGL','GOOG','AMZN','TSLA','AVGO','ORCL',
+  'AMD','QCOM','TXN','INTC','AMAT','MU','LRCX','KLAC','NOW','CRM','SNOW','PLTR','UBER',
+  'NET','PANW','CRWD','ZS','ADBE','INTU','IBM','HPE','CSCO','DELL','ANET','MRVL','SMCI',
+  'WDAY','DDOG','GTLB','TTD','HUBS','OKTA','MNDY','CFLT','MDB','ESTC','TEAM','AI','PATH',
+  'COIN','HOOD','SOFI','UPST','AFRM']);
+const TECH_UNIVERSE = UNIVERSE.filter(t => TECH_SECTORS.has(t));
 
 // Cache so we only hit AV once per day
 let _cache = { data: null, date: null };

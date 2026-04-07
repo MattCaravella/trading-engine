@@ -13,12 +13,13 @@ const ALPACA_KEY    = process.env.ALPACA_API_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY;
 const ALPACA_URL    = process.env.ALPACA_BASE_URL;
 
-const MAX_POSITIONS  = 10;
-const QTY_PER_TRADE  = 1;
+const MAX_POSITIONS  = 12;    // up from 10
+const POSITION_PCT   = 0.05;  // 5% of equity per position (~$5k on $100k account)
 const TRAIL_PERCENT  = 4;
-const HARD_STOP_PCT  = 5;
+const HARD_STOP_PCT  = 6;     // slightly wider stop — room to breathe
 const COOLDOWN_HOURS = 24;
-const BUY_THRESHOLD  = 70;
+const BUY_THRESHOLD  = 65;    // down from 70 — more opportunities
+const PROFIT_TARGET  = 7;     // take profits at +7%
 
 const STATE_FILE = path.join(__dirname, 'trade_history/engine_state.json');
 
@@ -48,11 +49,22 @@ async function getAccount()       { return alpaca('GET','/account'); }
 async function getOpenPositions() { const p=await alpaca('GET','/positions'); return Array.isArray(p)?p:[]; }
 async function getOpenOrders()    { const o=await alpaca('GET','/orders?status=open'); return Array.isArray(o)?o:[]; }
 
-async function placeBuy(ticker, reason) {
-  const order = await alpaca('POST','/orders',{ symbol:ticker, qty:String(QTY_PER_TRADE), side:'buy', type:'market', time_in_force:'day' });
+async function calcQty(ticker, equity) {
+  try {
+    const { getBars, closes } = require('./data/prices');
+    const bars  = await getBars(ticker, 5);
+    const price = closes(bars).slice(-1)[0];
+    const qty   = Math.floor((equity * POSITION_PCT) / price);
+    return Math.max(1, qty);
+  } catch { return 1; }
+}
+
+async function placeBuy(ticker, reason, equity) {
+  const qty   = await calcQty(ticker, equity);
+  const order = await alpaca('POST','/orders',{ symbol:ticker, qty:String(qty), side:'buy', type:'market', time_in_force:'day' });
   if (!order.id) { console.error(`  [BUY FAILED] ${ticker}:`, JSON.stringify(order)); return null; }
   logTrade({...order, engine_reason:reason});
-  console.log(`  [BUY]  ${ticker} — ${reason}`);
+  console.log(`  [BUY]  ${ticker} x${qty} — ${reason}`);
   return order;
 }
 
@@ -118,6 +130,12 @@ async function runTradeCycle(getCandidatesFn) {
       const pnlPct   = parseFloat(pos.unrealized_plpc)*100;
       console.log(`  ${ticker.padEnd(6)} entry=$${entry.toFixed(2)} P&L=${pnlPct.toFixed(2)}%`);
 
+      if (pnlPct >= PROFIT_TARGET) {
+        const sell = await alpaca('POST','/orders',{symbol:ticker,qty:pos.qty,side:'sell',type:'market',time_in_force:'day'});
+        if (sell.id) { logTrade({...sell,engine_reason:`Profit target: +${pnlPct.toFixed(2)}%`}); console.log(`  [PROFIT TAKE] ${ticker} +${pnlPct.toFixed(2)}%`); }
+        continue;
+      }
+
       if (pnlPct <= -HARD_STOP_PCT) {
         const sell = await alpaca('POST','/orders',{symbol:ticker,qty:pos.qty,side:'sell',type:'market',time_in_force:'day'});
         if (sell.id) { logTrade({...sell,engine_reason:`Hard stop: ${pnlPct.toFixed(2)}%`}); console.log(`  [HARD STOP] ${ticker}`); if(!state.stoppedOut)state.stoppedOut={}; state.stoppedOut[ticker]=now; }
@@ -151,7 +169,7 @@ async function runTradeCycle(getCandidatesFn) {
       console.log(`  [RISK] ${c.ticker}: ${risk.reason}`);
       if (!risk.safe) { console.log(`  [SKIP] ${c.ticker} — risk gate failed`); continue; }
       const reason = `Score ${c.netScore}/100 [${c.sources.join('+')}] | ${top.reason}`;
-      await placeBuy(c.ticker, reason);
+      await placeBuy(c.ticker, reason, equity);
       boughtThisCycle.add(c.ticker);
       console.log(`  [PENDING TRAIL] ${c.ticker} — trailing stop placed next cycle`);
     }

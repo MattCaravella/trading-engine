@@ -1,6 +1,5 @@
 const { getBars, closes, bollingerBands, rsi, getVIX } = require('../data/prices');
-
-const UNIVERSE = ['AAPL','MSFT','GOOGL','AMZN','META','NVDA','TSLA','JPM','BAC','GS','MS','WMT','TGT','COST','HD','LOW','XOM','CVX','COP','SLB','PFE','JNJ','MRK','ABBV','UNH','LLY','BA','CAT','GE','MMM','AMD','INTC','QCOM','MU','AVGO','CRM','ORCL','IBM','CSCO','ADBE','SPY','QQQ','IWM','XLF','XLE','XLK','XLV','XLI','XLU','XLP'];
+const { UNIVERSE } = require('../data/universe');
 
 async function getSignals() {
   const vix = await getVIX();

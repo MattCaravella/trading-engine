@@ -1,6 +1,5 @@
 const { getBars, closes, volumes, sma } = require('../data/prices');
-
-const UNIVERSE = ['AAPL','MSFT','GOOGL','AMZN','META','NVDA','TSLA','JPM','BAC','GS','AMD','INTC','QCOM','MU','AVGO','CRM','ORCL','IBM','CSCO','ADBE','XOM','CVX','COP','PFE','JNJ','MRK','UNH','BA','CAT','GE','WMT','TGT','COST','HD','SPY','QQQ','IWM','PLTR','COIN','SOFI'];
+const { UNIVERSE } = require('../data/universe');
 
 async function getSignals() {
   const signals = [];
