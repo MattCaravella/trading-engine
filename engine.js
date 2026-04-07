@@ -3,6 +3,7 @@ const path = require('path');
 const { logTrade }           = require('./logger');
 const { assessPositionRisk } = require('./strategies/montecarlo');
 const { isEarningsBlock }    = require('./monitors/earnings_guard');
+const { evaluateTrade, reconcileStops, recordTradeExecuted, updatePeakEquity } = require('./governor');
 
 const envPath = path.join(__dirname, '.env');
 fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
@@ -49,18 +50,21 @@ async function getAccount()       { return alpaca('GET','/account'); }
 async function getOpenPositions() { const p=await alpaca('GET','/positions'); return Array.isArray(p)?p:[]; }
 async function getOpenOrders()    { const o=await alpaca('GET','/orders?status=open'); return Array.isArray(o)?o:[]; }
 
-async function calcQty(ticker, equity) {
+async function calcQty(ticker, equity, riskMaxPct) {
   try {
     const { getBars, closes } = require('./data/prices');
     const bars  = await getBars(ticker, 5);
     const price = closes(bars).slice(-1)[0];
-    const qty   = Math.floor((equity * POSITION_PCT) / price);
+    // Use Monte Carlo's suggested max pct, or default POSITION_PCT, whichever is smaller
+    const effectivePct = riskMaxPct ? Math.min(POSITION_PCT, riskMaxPct / 100) : POSITION_PCT;
+    const qty   = Math.floor((equity * effectivePct) / price);
+    if (effectivePct < POSITION_PCT) console.log(`  [SIZE] ${ticker}: Monte Carlo capped to ${(effectivePct*100).toFixed(1)}% (was ${(POSITION_PCT*100).toFixed(1)}%)`);
     return Math.max(1, qty);
   } catch { return 1; }
 }
 
-async function placeBuy(ticker, reason, equity) {
-  const qty   = await calcQty(ticker, equity);
+async function placeBuy(ticker, reason, equity, riskMaxPct) {
+  const qty   = await calcQty(ticker, equity, riskMaxPct);
   const order = await alpaca('POST','/orders',{ symbol:ticker, qty:String(qty), side:'buy', type:'market', time_in_force:'day' });
   if (!order.id) { console.error(`  [BUY FAILED] ${ticker}:`, JSON.stringify(order)); return null; }
   logTrade({...order, engine_reason:reason});
@@ -119,10 +123,18 @@ async function runTradeCycle(getCandidatesFn) {
     const buyPow  = parseFloat(account.buying_power);
     console.log(`[Engine] Equity: $${equity.toLocaleString()} | Buying power: $${buyPow.toLocaleString()}`);
 
+    // Governor: track peak equity + drawdown
+    const peak = updatePeakEquity(equity);
+    const ddPct = ((peak - equity) / peak * 100).toFixed(2);
+    console.log(`[Engine] Peak: $${peak.toLocaleString()} | Drawdown: -${ddPct}%`);
+
     await detectStopOuts(state);
 
     const [positions, openOrders] = await Promise.all([getOpenPositions(),getOpenOrders()]);
     console.log(`[Engine] Positions: ${positions.length} | Open orders: ${openOrders.length}`);
+
+    // Governor: reconcile stops every cycle
+    await reconcileStops(positions, openOrders);
 
     for (const pos of positions) {
       const ticker   = pos.symbol;
@@ -163,14 +175,22 @@ async function runTradeCycle(getCandidatesFn) {
     for (const c of toTrade) {
       if (boughtThisCycle.has(c.ticker)) continue;
       const top    = c.signals.sort((a,b)=>b.score-a.score)[0];
+      // Governor evaluation (drawdown, sector, daily cap, liquidity)
+      const govResult = await evaluateTrade(c.ticker, equity, positions, openOrders);
+      if (!govResult.approved) {
+        for (const r of govResult.reasons) console.log(`  [GOV BLOCK] ${c.ticker} — ${r}`);
+        continue;
+      }
+
       const earningsBlock = await isEarningsBlock(c.ticker).catch(()=>false);
       if (earningsBlock) { console.log(`  [SKIP] ${c.ticker} — earnings within 5 days`); continue; }
       const risk   = await assessPositionRisk(c.ticker, equity);
       console.log(`  [RISK] ${c.ticker}: ${risk.reason}`);
       if (!risk.safe) { console.log(`  [SKIP] ${c.ticker} — risk gate failed`); continue; }
       const reason = `Score ${c.netScore}/100 [${c.sources.join('+')}] | ${top.reason}`;
-      await placeBuy(c.ticker, reason, equity);
+      await placeBuy(c.ticker, reason, equity, risk.maxPct);
       boughtThisCycle.add(c.ticker);
+      recordTradeExecuted(); // Governor: increment daily trade counter
       console.log(`  [PENDING TRAIL] ${c.ticker} — trailing stop placed next cycle`);
     }
 
