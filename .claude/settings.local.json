@@ -10,7 +10,8 @@
       "Bash(gh auth:*)",
       "Bash(node -e \":*)",
       "WebSearch",
-      "Bash(tasklist /FI 'IMAGENAME eq node.exe')"
+      "Bash(tasklist /FI 'IMAGENAME eq node.exe')",
+      "Bash(powershell -Command \"Start-Process -NoNewWindow -FilePath ''node'' -ArgumentList ''scheduler.js'' -WorkingDirectory ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading'' -RedirectStandardOutput ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' -RedirectStandardError ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler_err.log''; Start-Sleep 2; Get-Process node | Select-Object Id,CPU,StartTime\")"
     ]
   }
 }
