@@ -24,10 +24,12 @@ const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY;
 const ALPACA_URL    = process.env.ALPACA_BASE_URL;
 
 // ─── Configuration ───────────────────────────────────────────────────────────
-const MAX_DRAWDOWN_PCT   = 8;     // 8% from peak → halt new buys
-const MAX_SECTOR_PCT     = 25;    // 25% max in any sector
-const MAX_DAILY_TRADES   = 6;     // Max new buys per day
+const MAX_DRAWDOWN_PCT     = 8;       // 8% from peak → halt new buys
+const MAX_SECTOR_PCT       = 25;      // 25% max in any sector
+const MAX_DAILY_TRADES     = 6;       // Max new buys per day
 const MIN_DAILY_DOLLAR_VOL = 1000000; // Skip stocks with <$1M avg daily dollar volume
+const MAX_CORRELATED       = 3;       // Max positions with correlation > 0.70
+const CORR_THRESHOLD       = 0.70;    // Correlation threshold for "highly correlated"
 
 const STATE_FILE = path.join(__dirname, 'trade_history/governor_state.json');
 
@@ -220,6 +222,42 @@ async function checkLiquidity(ticker) {
   }
 }
 
+// ─── 6. Correlation Check ────────────────────────────────────────────────────
+async function checkCorrelation(newTicker, positions) {
+  try {
+    const { getBars, closes, correlation } = require('./data/prices');
+    const newBars = await getBars(newTicker, 60);
+    const newCls  = closes(newBars);
+    if (newCls.length < 30) return { blocked: false, highCorrCount: 0 };
+
+    let highCorrCount = 0;
+    const correlated  = [];
+
+    // Only check against current positions (not all 500 tickers)
+    for (const pos of positions) {
+      try {
+        const posBars = await getBars(pos.symbol, 60);
+        const posCls  = closes(posBars);
+        const corr    = correlation(newCls, posCls);
+        if (corr >= CORR_THRESHOLD) {
+          highCorrCount++;
+          correlated.push(`${pos.symbol}(${corr.toFixed(2)})`);
+        }
+      } catch {}
+    }
+
+    const blocked = highCorrCount >= MAX_CORRELATED;
+    return {
+      blocked,
+      highCorrCount,
+      correlated,
+      reason: blocked ? `CORRELATION LIMIT: ${newTicker} correlated with ${correlated.join(', ')} (max ${MAX_CORRELATED})` : null
+    };
+  } catch {
+    return { blocked: false, highCorrCount: 0 };
+  }
+}
+
 // ─── Full pre-trade evaluation ──────────────────────────────────────────────
 async function evaluateTrade(ticker, equity, positions, openOrders, positionValue) {
   const state = loadState();
@@ -240,6 +278,12 @@ async function evaluateTrade(ticker, equity, positions, openOrders, positionValu
   // 4. Liquidity
   const liq = await checkLiquidity(ticker);
   if (liq.blocked) { results.approved = false; results.reasons.push(liq.reason); }
+
+  // 5. Correlation
+  if (results.approved) { // only run expensive correlation check if still approved
+    const corr = await checkCorrelation(ticker, positions);
+    if (corr.blocked) { results.approved = false; results.reasons.push(corr.reason); }
+  }
 
   saveState(state);
   return results;

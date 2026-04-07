@@ -11,43 +11,84 @@ const insider_buying= require('./strategies/insider_buying');
 const downtrend     = require('./strategies/downtrend');
 
 const BUY_THRESHOLD = 70;
-const WEIGHTS = { congress:1.5, insider_buying:1.4, offexchange:1.3, ma_crossover:1.2, downtrend:1.1, bollinger:1.1, govcontracts:1.0, pairs_trading:1.0, lobbying:0.8, techsector:0.9, flights:0.7, trending:0.6 };
+
+// Primary sources: can trigger a buy on their own
+// Overlay sources: can only BOOST a ticker that already has a primary signal
+const PRIMARY_SOURCES = new Set(['bollinger', 'ma_crossover', 'pairs_trading', 'downtrend', 'insider_buying', 'techsector']);
+const OVERLAY_SOURCES = new Set(['congress', 'govcontracts', 'lobbying', 'flights', 'trending', 'offexchange']);
+
+// Overlay cap: alt-data can add at most this much to a ticker's score
+const OVERLAY_CAP = 25;
+
+const WEIGHTS = {
+  // Primary (full weight)
+  insider_buying: 1.4, ma_crossover: 1.2, downtrend: 1.1, bollinger: 1.1,
+  pairs_trading: 1.0, techsector: 0.9,
+  // Overlay (used as boost, capped)
+  congress: 1.5, offexchange: 1.3, govcontracts: 1.0, lobbying: 0.8,
+  flights: 0.7, trending: 0.6,
+};
 
 function aggregateByTicker(signals) {
   const tickers = {};
   for (const s of signals) {
     const t = s.ticker;
-    if (!tickers[t]) tickers[t] = { ticker:t, bullishScore:0, bearishScore:0, signals:[] };
-    const w = (WEIGHTS[s.source]||1.0) * s.score;
-    if (s.direction==='bullish') tickers[t].bullishScore += w;
-    else tickers[t].bearishScore += w;
+    if (!tickers[t]) tickers[t] = { ticker: t, primaryScore: 0, overlayScore: 0, bearishScore: 0, signals: [], hasPrimary: false };
+    const w = (WEIGHTS[s.source] || 1.0) * s.score;
+
+    if (s.direction === 'bearish') {
+      tickers[t].bearishScore += w;
+    } else if (PRIMARY_SOURCES.has(s.source)) {
+      tickers[t].primaryScore += w;
+      tickers[t].hasPrimary = true;
+    } else {
+      // Overlay source — accumulate but will be capped
+      tickers[t].overlayScore += w;
+    }
     tickers[t].signals.push(s);
   }
-  return Object.values(tickers).map(t => ({
-    ...t,
-    netScore: Math.min(100, Math.max(0, Math.round(t.bullishScore - t.bearishScore))),
-    signalCount: t.signals.length,
-    sources: [...new Set(t.signals.map(s=>s.source))],
-  })).sort((a,b)=>b.netScore-a.netScore);
+
+  return Object.values(tickers).map(t => {
+    // If ticker has NO primary signal, overlay is severely penalized (10% only)
+    // This prevents congress/lobbying from triggering buys alone
+    let effectiveOverlay;
+    if (t.hasPrimary) {
+      effectiveOverlay = Math.min(OVERLAY_CAP, t.overlayScore);
+    } else {
+      effectiveOverlay = Math.min(OVERLAY_CAP * 0.1, t.overlayScore * 0.1);
+    }
+
+    const bullishTotal = t.primaryScore + effectiveOverlay;
+    const netScore = Math.min(100, Math.max(0, Math.round(bullishTotal - t.bearishScore)));
+
+    return {
+      ...t,
+      bullishScore: bullishTotal,
+      netScore,
+      signalCount: t.signals.length,
+      sources: [...new Set(t.signals.map(s => s.source))],
+      confirmedByTech: t.hasPrimary,
+    };
+  }).sort((a, b) => b.netScore - a.netScore);
 }
 
 async function collectAllSignals() {
   const all = [];
   const sources = { congress, govcontracts, lobbying, flights, trending, bollinger, ma_crossover, pairs_trading, insider_buying, downtrend };
-  await Promise.allSettled(Object.entries(sources).map(async ([name,mod]) => {
-    try { const s=await mod.getSignals(); for(const sig of s) all.push({...sig,source:name}); }
-    catch(e) { console.warn(`  [${name}] failed: ${e.message}`); }
+  await Promise.allSettled(Object.entries(sources).map(async ([name, mod]) => {
+    try { const s = await mod.getSignals(); for (const sig of s) all.push({ ...sig, source: name }); }
+    catch (e) { console.warn(`  [${name}] failed: ${e.message}`); }
   }));
-  const top25 = aggregateByTicker(all).slice(0,25).map(t=>t.ticker);
-  try { const oe=await offexchange.getSignals(top25); for(const s of oe) all.push({...s,source:'offexchange'}); } catch {}
+  const top25 = aggregateByTicker(all).slice(0, 25).map(t => t.ticker);
+  try { const oe = await offexchange.getSignals(top25); for (const s of oe) all.push({ ...s, source: 'offexchange' }); } catch {}
   return all;
 }
 
 async function getTopCandidates() {
   const signals = await collectAllSignals();
   const ranked  = aggregateByTicker(signals);
-  const buyCandidates = ranked.filter(t=>t.netScore>=BUY_THRESHOLD);
+  const buyCandidates = ranked.filter(t => t.netScore >= BUY_THRESHOLD);
   return { buyCandidates, allRanked: ranked };
 }
 
-module.exports = { getTopCandidates, collectAllSignals, aggregateByTicker, BUY_THRESHOLD };
+module.exports = { getTopCandidates, collectAllSignals, aggregateByTicker, BUY_THRESHOLD, PRIMARY_SOURCES, OVERLAY_SOURCES };

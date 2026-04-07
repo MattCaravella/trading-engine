@@ -5,6 +5,8 @@ const { assessPositionRisk } = require('./strategies/montecarlo');
 const { isEarningsBlock }    = require('./monitors/earnings_guard');
 const { evaluateTrade, reconcileStops, recordTradeExecuted, updatePeakEquity } = require('./governor');
 const { processClosedTrades } = require('./postmortem');
+const { tracker } = require('./signal_lifecycle');
+const { isSystemHealthy } = require('./signal_cache');
 
 const envPath = path.join(__dirname, '.env');
 fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
@@ -120,6 +122,11 @@ async function runTradeCycle(getCandidatesFn) {
   try {
     const account = await getAccount();
     if (account.trading_blocked) { console.warn('[Engine] Trading blocked.'); return; }
+
+    // System health check — halt new trades if too many data sources failing
+    if (!isSystemHealthy()) {
+      console.warn('[Engine] ⚠ SYSTEM KILL: Data sources degraded — managing stops only, no new buys');
+    }
     const equity  = parseFloat(account.equity);
     const buyPow  = parseFloat(account.buying_power);
     console.log(`[Engine] Equity: $${equity.toLocaleString()} | Buying power: $${buyPow.toLocaleString()}`);
@@ -166,41 +173,90 @@ async function runTradeCycle(getCandidatesFn) {
       }
     }
 
+    // Reset lifecycle tracker for this cycle
+    tracker.reset();
+
+    // System kill — skip buy logic entirely if data is degraded
+    if (!isSystemHealthy()) {
+      saveState(state);
+      console.log('[Engine] Cycle complete — stops managed, no new trades (system kill)');
+      return;
+    }
+
     const ranked    = await getCandidatesFn();
     const candidates = ranked.filter(t=>t.netScore>=BUY_THRESHOLD);
     const openTickers = new Set(positions.map(p=>p.symbol));
     const slots = MAX_POSITIONS - openTickers.size;
-    if (slots <= 0) { console.log('[Engine] Max positions reached.'); saveState(state); return; }
+    if (slots <= 0) { console.log('[Engine] Max positions reached.'); saveState(state); tracker.logCycle(equity, positions.length); return; }
 
     const pendingBuys = new Set(openOrders.filter(o=>o.side==='buy'&&o.status==='pending_new').map(o=>o.symbol));
     const toTrade = candidates.filter(c=>!openTickers.has(c.ticker)&&!pendingBuys.has(c.ticker)&&!isOnCooldown(c.ticker,state)).slice(0,slots);
     if (toTrade.length===0) console.log('[Engine] No new buy candidates this cycle.');
 
+    // Register all candidates in lifecycle tracker
+    for (const c of toTrade) {
+      const top = c.signals.sort((a,b)=>b.score-a.score)[0];
+      c._lifecycleId = tracker.register(c.ticker, top?.source || 'unknown', c.netScore, 'bullish', top?.reason || '');
+      // Check technical confirmation
+      if (c.confirmedByTech) tracker.confirm(c._lifecycleId);
+      else tracker.reject(c._lifecycleId, 'REJECTED_UNCONFIRMED', 'No primary technical signal');
+    }
+
     const boughtThisCycle = new Set();
+    let newTrades = 0;
     for (const c of toTrade) {
       if (boughtThisCycle.has(c.ticker)) continue;
-      const top    = c.signals.sort((a,b)=>b.score-a.score)[0];
+      // Skip unconfirmed signals (rejected in lifecycle)
+      const sig = tracker.signals.get(c._lifecycleId);
+      if (sig && sig.state !== 'CONFIRMED') continue;
+
+      const top = c.signals.sort((a,b)=>b.score-a.score)[0];
+
       // Governor evaluation (drawdown, sector, daily cap, liquidity)
       const govResult = await evaluateTrade(c.ticker, equity, positions, openOrders);
       if (!govResult.approved) {
         for (const r of govResult.reasons) console.log(`  [GOV BLOCK] ${c.ticker} — ${r}`);
+        tracker.reject(c._lifecycleId, 'REJECTED_GOVERNOR', govResult.reasons[0]);
         continue;
       }
 
       const earningsBlock = await isEarningsBlock(c.ticker).catch(()=>false);
-      if (earningsBlock) { console.log(`  [SKIP] ${c.ticker} — earnings within 5 days`); continue; }
-      const risk   = await assessPositionRisk(c.ticker, equity);
+      if (earningsBlock) {
+        console.log(`  [SKIP] ${c.ticker} — earnings within 5 days`);
+        tracker.reject(c._lifecycleId, 'REJECTED_EARNINGS', 'Earnings within 5 days');
+        continue;
+      }
+
+      const risk = await assessPositionRisk(c.ticker, equity);
       console.log(`  [RISK] ${c.ticker}: ${risk.reason}`);
-      if (!risk.safe) { console.log(`  [SKIP] ${c.ticker} — risk gate failed`); continue; }
+      if (!risk.safe) {
+        console.log(`  [SKIP] ${c.ticker} — risk gate failed`);
+        tracker.reject(c._lifecycleId, 'REJECTED_RISK', risk.reason);
+        continue;
+      }
+
+      // All gates passed → APPROVED
+      tracker.approve(c._lifecycleId);
+
       const reason = `Score ${c.netScore}/100 [${c.sources.join('+')}] | ${top.reason}`;
-      await placeBuy(c.ticker, reason, equity, risk.maxPct);
+      const order = await placeBuy(c.ticker, reason, equity, risk.maxPct);
+
+      if (order && order.id) {
+        tracker.execute(c._lifecycleId, order.id);
+        newTrades++;
+      }
+
       boughtThisCycle.add(c.ticker);
-      recordTradeExecuted(); // Governor: increment daily trade counter
+      recordTradeExecuted();
       console.log(`  [PENDING TRAIL] ${c.ticker} — trailing stop placed next cycle`);
     }
 
+    // Lifecycle summary
+    const cycleSummary = tracker.logCycle(equity, positions.length);
+    tracker.printRejectionHistogram();
+
     saveState(state);
-    console.log(`[Engine] Cycle complete — new trades: ${toTrade.length}`);
+    console.log(`[Engine] Cycle complete — new trades: ${newTrades}`);
   } catch(err) { console.error('[Engine] Cycle error:', err.message); saveState(state); }
 }
 
