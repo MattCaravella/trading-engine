@@ -11,7 +11,7 @@ const insider_buying= require('./strategies/insider_buying');
 const downtrend     = require('./strategies/downtrend');
 
 const BUY_THRESHOLD = 70;
-const WEIGHTS = { congress:1.5, insider_buying:1.4, offexchange:1.3, ma_crossover:1.2, downtrend:1.1, bollinger:1.1, govcontracts:1.0, pairs_trading:1.0, lobbying:0.8, flights:0.7, trending:0.6 };
+const WEIGHTS = { congress:1.5, insider_buying:1.4, offexchange:1.3, ma_crossover:1.2, downtrend:1.1, bollinger:1.1, govcontracts:1.0, pairs_trading:1.0, lobbying:0.8, techsector:0.9, flights:0.7, trending:0.6 };
 
 function aggregateByTicker(signals) {
   const tickers = {};

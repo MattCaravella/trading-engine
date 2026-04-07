@@ -2,6 +2,7 @@ const fs   = require('fs');
 const path = require('path');
 const { logTrade }           = require('./logger');
 const { assessPositionRisk } = require('./strategies/montecarlo');
+const { isEarningsBlock }    = require('./monitors/earnings_guard');
 
 const envPath = path.join(__dirname, '.env');
 fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
@@ -141,6 +142,8 @@ async function runTradeCycle(getCandidatesFn) {
 
     for (const c of toTrade) {
       const top    = c.signals.sort((a,b)=>b.score-a.score)[0];
+      const earningsBlock = await isEarningsBlock(c.ticker).catch(()=>false);
+      if (earningsBlock) { console.log(`  [SKIP] ${c.ticker} — earnings within 5 days`); continue; }
       const risk   = await assessPositionRisk(c.ticker, equity);
       console.log(`  [RISK] ${c.ticker}: ${risk.reason}`);
       if (!risk.safe) { console.log(`  [SKIP] ${c.ticker} — risk gate failed`); continue; }

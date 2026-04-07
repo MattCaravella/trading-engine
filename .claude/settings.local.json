@@ -11,7 +11,12 @@
       "Bash(node -e \":*)",
       "WebSearch",
       "Bash(tasklist /FI 'IMAGENAME eq node.exe')",
-      "Bash(powershell -Command \"Start-Process -NoNewWindow -FilePath ''node'' -ArgumentList ''scheduler.js'' -WorkingDirectory ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading'' -RedirectStandardOutput ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' -RedirectStandardError ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler_err.log''; Start-Sleep 2; Get-Process node | Select-Object Id,CPU,StartTime\")"
+      "Bash(powershell -Command \"Start-Process -NoNewWindow -FilePath ''node'' -ArgumentList ''scheduler.js'' -WorkingDirectory ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading'' -RedirectStandardOutput ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' -RedirectStandardError ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler_err.log''; Start-Sleep 2; Get-Process node | Select-Object Id,CPU,StartTime\")",
+      "Bash(powershell -Command \"powercfg /change standby-timeout-ac 0; powershell -Command powercfg /change standby-timeout-dc 0; echo ''Sleep disabled''\")",
+      "Bash(powershell -Command \":*)",
+      "mcp__mcp-registry__search_mcp_registry",
+      "Bash(powershell -Command \"Get-Process node | Stop-Process -Force; Start-Sleep 2; echo ''Stopped''\")",
+      "Bash(powershell -Command \"Start-Process -NoNewWindow -FilePath ''node'' -ArgumentList ''scheduler.js'' -WorkingDirectory ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading'' -RedirectStandardOutput ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' -RedirectStandardError ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler_err.log''; Start-Sleep 12; Get-Content ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log''\")"
     ]
   }
 }

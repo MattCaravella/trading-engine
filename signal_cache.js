@@ -3,6 +3,7 @@ const govcontracts  = require('./monitors/govcontracts');
 const lobbying      = require('./monitors/lobbying');
 const flights       = require('./monitors/flights');
 const trending      = require('./monitors/trending');
+const techsector    = require('./monitors/techsector');
 const bollinger     = require('./strategies/bollinger');
 const ma_crossover  = require('./strategies/ma_crossover');
 const pairs_trading = require('./strategies/pairs_trading');
@@ -11,7 +12,7 @@ const downtrend     = require('./strategies/downtrend');
 const offexchange   = require('./monitors/offexchange');
 const { aggregateByTicker } = require('./signals');
 
-const SLOW_SOURCES = { congress, govcontracts, lobbying, insider_buying, downtrend };
+const SLOW_SOURCES = { congress, govcontracts, lobbying, insider_buying, downtrend, techsector };
 const FAST_SOURCES = { bollinger, ma_crossover, pairs_trading, trending, flights };
 
 let slowCache = { signals:[], updatedAt:null };
