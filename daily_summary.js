@@ -10,6 +10,7 @@ const ALPACA_KEY    = process.env.ALPACA_API_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY;
 const ALPACA_URL    = process.env.ALPACA_BASE_URL;
 const SUMMARIES_DIR = 'C:\\Users\\Matth\\OneDrive\\TradingSummaries';
+const { recordDailySnapshot, getPerformanceReport } = require('./performance_tracker');
 
 async function alpaca(endpoint) {
   const res = await fetch(`${ALPACA_URL}/v2${endpoint}`, {
@@ -108,6 +109,17 @@ async function generateSummary() {
   lines.push(`  Total orders filled: ${filled.length}`);
   lines.push(`  Buys: ${buys.length}  |  Sells: ${sells.length}  |  Open positions: ${open.length}`);
   lines.push('');
+
+  // Record equity snapshot for performance tracking
+  recordDailySnapshot(equity, open.length, buys.length, sells.length);
+
+  // Performance tracker section
+  const perfReport = getPerformanceReport();
+  if (perfReport) {
+    lines.push(perfReport);
+    lines.push('');
+  }
+
   lines.push(D);
   lines.push('');
 

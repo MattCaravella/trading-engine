@@ -4,6 +4,7 @@ const { logTrade }           = require('./logger');
 const { assessPositionRisk } = require('./strategies/montecarlo');
 const { isEarningsBlock }    = require('./monitors/earnings_guard');
 const { evaluateTrade, reconcileStops, recordTradeExecuted, updatePeakEquity } = require('./governor');
+const { processClosedTrades } = require('./postmortem');
 
 const envPath = path.join(__dirname, '.env');
 fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
@@ -129,6 +130,10 @@ async function runTradeCycle(getCandidatesFn) {
     console.log(`[Engine] Peak: $${peak.toLocaleString()} | Drawdown: -${ddPct}%`);
 
     await detectStopOuts(state);
+
+    // Postmortem: analyze any newly closed trades
+    const closedOrders = await alpaca('GET', '/orders?status=closed&limit=50').catch(() => []);
+    if (Array.isArray(closedOrders)) await processClosedTrades(closedOrders);
 
     const [positions, openOrders] = await Promise.all([getOpenPositions(),getOpenOrders()]);
     console.log(`[Engine] Positions: ${positions.length} | Open orders: ${openOrders.length}`);

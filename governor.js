@@ -27,7 +27,7 @@ const ALPACA_URL    = process.env.ALPACA_BASE_URL;
 const MAX_DRAWDOWN_PCT   = 8;     // 8% from peak → halt new buys
 const MAX_SECTOR_PCT     = 25;    // 25% max in any sector
 const MAX_DAILY_TRADES   = 6;     // Max new buys per day
-const MIN_DAILY_VOLUME   = 500000; // Skip stocks with <500K avg daily volume (shares)
+const MIN_DAILY_DOLLAR_VOL = 1000000; // Skip stocks with <$1M avg daily dollar volume
 
 const STATE_FILE = path.join(__dirname, 'trade_history/governor_state.json');
 
@@ -201,16 +201,22 @@ async function reconcileStops(positions, openOrders) {
 // ─── 5. Liquidity Filter ────────────────────────────────────────────────────
 async function checkLiquidity(ticker) {
   try {
-    const { getBars, volumes, sma } = require('./data/prices');
+    const { getBars, closes, volumes, sma } = require('./data/prices');
     const bars = await getBars(ticker, 25);
+    const cls  = closes(bars);
     const vols = volumes(bars);
-    const avgVol = sma(vols, 20);
-    if (avgVol && avgVol < MIN_DAILY_VOLUME) {
-      return { blocked: true, avgVolume: Math.round(avgVol), reason: `LOW LIQUIDITY: ${ticker} avg vol ${Math.round(avgVol).toLocaleString()} < ${MIN_DAILY_VOLUME.toLocaleString()}` };
+    const avgVol   = sma(vols, 20);
+    const avgPrice = sma(cls, 20);
+    if (avgVol && avgPrice) {
+      const dollarVol = avgVol * avgPrice;
+      if (dollarVol < MIN_DAILY_DOLLAR_VOL) {
+        return { blocked: true, dollarVol: Math.round(dollarVol), reason: `LOW LIQUIDITY: ${ticker} avg $vol $${Math.round(dollarVol).toLocaleString()} < $${MIN_DAILY_DOLLAR_VOL.toLocaleString()}` };
+      }
+      return { blocked: false, dollarVol: Math.round(dollarVol) };
     }
-    return { blocked: false, avgVolume: avgVol ? Math.round(avgVol) : null };
+    return { blocked: false, dollarVol: null };
   } catch {
-    return { blocked: false, avgVolume: null }; // fail open — don't block on data error
+    return { blocked: false, dollarVol: null }; // fail open — don't block on data error
   }
 }
 
