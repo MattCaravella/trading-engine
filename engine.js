@@ -13,8 +13,8 @@ const ALPACA_KEY    = process.env.ALPACA_API_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY;
 const ALPACA_URL    = process.env.ALPACA_BASE_URL;
 
-const MAX_POSITIONS  = 12;    // up from 10
-const POSITION_PCT   = 0.05;  // 5% of equity per position (~$5k on $100k account)
+const MAX_POSITIONS  = 12;    // 12 positions × 8% = 96% deployed
+const POSITION_PCT   = 0.08;  // 8% of equity per position (~$8k on $100k account)
 const TRAIL_PERCENT  = 4;
 const HARD_STOP_PCT  = 6;     // slightly wider stop — room to breathe
 const COOLDOWN_HOURS = 24;
