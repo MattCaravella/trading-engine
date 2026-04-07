@@ -16,7 +16,8 @@
       "Bash(powershell -Command \":*)",
       "mcp__mcp-registry__search_mcp_registry",
       "Bash(powershell -Command \"Get-Process node | Stop-Process -Force; Start-Sleep 2; echo ''Stopped''\")",
-      "Bash(powershell -Command \"Start-Process -NoNewWindow -FilePath ''node'' -ArgumentList ''scheduler.js'' -WorkingDirectory ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading'' -RedirectStandardOutput ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' -RedirectStandardError ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler_err.log''; Start-Sleep 12; Get-Content ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log''\")"
+      "Bash(powershell -Command \"Start-Process -NoNewWindow -FilePath ''node'' -ArgumentList ''scheduler.js'' -WorkingDirectory ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading'' -RedirectStandardOutput ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' -RedirectStandardError ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler_err.log''; Start-Sleep 12; Get-Content ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log''\")",
+      "Bash(powershell -Command \"Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2; Start-Process -NoNewWindow -FilePath ''node'' -ArgumentList ''scheduler.js'' -WorkingDirectory ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading'' -RedirectStandardOutput ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' -RedirectStandardError ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler_err.log''; Start-Sleep 8; Get-Content ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' | Select-Object -Last 20\")"
     ]
   }
 }

@@ -137,10 +137,13 @@ async function runTradeCycle(getCandidatesFn) {
     const slots = MAX_POSITIONS - openTickers.size;
     if (slots <= 0) { console.log('[Engine] Max positions reached.'); saveState(state); return; }
 
-    const toTrade = candidates.filter(c=>!openTickers.has(c.ticker)&&!isOnCooldown(c.ticker,state)).slice(0,slots);
+    const pendingBuys = new Set(openOrders.filter(o=>o.side==='buy'&&o.status==='pending_new').map(o=>o.symbol));
+    const toTrade = candidates.filter(c=>!openTickers.has(c.ticker)&&!pendingBuys.has(c.ticker)&&!isOnCooldown(c.ticker,state)).slice(0,slots);
     if (toTrade.length===0) console.log('[Engine] No new buy candidates this cycle.');
 
+    const boughtThisCycle = new Set();
     for (const c of toTrade) {
+      if (boughtThisCycle.has(c.ticker)) continue;
       const top    = c.signals.sort((a,b)=>b.score-a.score)[0];
       const earningsBlock = await isEarningsBlock(c.ticker).catch(()=>false);
       if (earningsBlock) { console.log(`  [SKIP] ${c.ticker} — earnings within 5 days`); continue; }
@@ -149,6 +152,7 @@ async function runTradeCycle(getCandidatesFn) {
       if (!risk.safe) { console.log(`  [SKIP] ${c.ticker} — risk gate failed`); continue; }
       const reason = `Score ${c.netScore}/100 [${c.sources.join('+')}] | ${top.reason}`;
       await placeBuy(c.ticker, reason);
+      boughtThisCycle.add(c.ticker);
       console.log(`  [PENDING TRAIL] ${c.ticker} — trailing stop placed next cycle`);
     }
 
