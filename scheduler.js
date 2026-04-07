@@ -3,6 +3,7 @@ const { refreshSlow, refreshFast, getCandidates, cacheStatus } = require('./sign
 const { runTradeCycle, placeOvernightTrailingStops }           = require('./engine');
 const { generateSummary }                                      = require('./daily_summary');
 const { generateForecast }                                     = require('./daily_forecast');
+const { runCalibration }                                       = require('./strategy_calibrator');
 
 const FAST_REFRESH_MS  = 30 * 60 * 1000;
 const TRADE_EXEC_MS    = 5  * 60 * 1000;
@@ -53,6 +54,7 @@ async function doAfterHours() {
   console.log('═'.repeat(60));
   await refreshSlow();
   await placeOvernightTrailingStops();
+  runCalibration(); // Recalibrate strategy weights from trade history
   await generateSummary();
   await generateForecast();
   state.afterHoursDone = true;

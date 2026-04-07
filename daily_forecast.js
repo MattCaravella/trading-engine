@@ -12,6 +12,8 @@ const ALPACA_URL    = process.env.ALPACA_BASE_URL;
 const SUMMARIES_DIR = 'C:\\Users\\Matth\\OneDrive\\TradingSummaries';
 
 const { getBars, closes, volumes, sma, rsi, bollingerBands, getVIX } = require('./data/prices');
+const { generateLessonsReport } = require('./strategy_calibrator');
+const { getPerformanceReport } = require('./performance_tracker');
 
 // ─── Alpaca helpers ──────────────────────────────────────────────────────────
 async function alpaca(endpoint) {
@@ -252,11 +254,33 @@ async function generateForecast() {
     lines.push('');
   }
 
+  // Lessons from trade history (calibrator feedback)
+  try {
+    const ledgerPath = path.join(__dirname, 'trade_history/performance_ledger.json');
+    if (fs.existsSync(ledgerPath)) {
+      const ledger = JSON.parse(fs.readFileSync(ledgerPath));
+      if (ledger.trades && ledger.trades.length > 0) {
+        const lessons = generateLessonsReport(ledger.trades);
+        lines.push(lessons);
+        lines.push('');
+      }
+    }
+  } catch {}
+
+  // Performance tracker
+  try {
+    const perfReport = getPerformanceReport();
+    if (perfReport) {
+      lines.push(perfReport);
+      lines.push('');
+    }
+  } catch {}
+
   lines.push('STRATEGY NOTES');
   lines.push(d);
   lines.push(`  • Trailing stops (4%) active on all overnight positions`);
-  lines.push(`  • Hard stop at -5% per position during market hours`);
-  lines.push(`  • Max ${10} concurrent positions`);
+  lines.push(`  • Hard stop at -6% per position during market hours`);
+  lines.push(`  • Max 12 concurrent positions (8% equity each)`);
   lines.push(`  • VIX ${vix ? (vix >= 20 ? `${vixStr} — Bollinger strategy ACTIVE` : `${vixStr} — Bollinger strategy IDLE (needs >20)`) : 'N/A'}`);
   lines.push(`  • Next slow refresh: tomorrow 8:00 AM ET`);
   lines.push(`  • Next trade cycle: tomorrow 9:30 AM ET`);

@@ -20,20 +20,19 @@ const OVERLAY_SOURCES = new Set(['congress', 'govcontracts', 'lobbying', 'flight
 // Overlay cap: alt-data can add at most this much to a ticker's score
 const OVERLAY_CAP = 25;
 
-const WEIGHTS = {
-  // Primary (full weight)
-  insider_buying: 1.4, ma_crossover: 1.2, downtrend: 1.1, bollinger: 1.1,
-  pairs_trading: 1.0, techsector: 0.9,
-  // Overlay (used as boost, capped)
-  congress: 1.5, offexchange: 1.3, govcontracts: 1.0, lobbying: 0.8,
-  flights: 0.7, trending: 0.6,
-};
+const { getLiveWeights } = require('./strategy_calibrator');
+
+// Weights are loaded from calibrator (adaptive) with fallback to baseline
+function getWeights() {
+  return getLiveWeights();
+}
 
 function aggregateByTicker(signals) {
   const tickers = {};
   for (const s of signals) {
     const t = s.ticker;
     if (!tickers[t]) tickers[t] = { ticker: t, primaryScore: 0, overlayScore: 0, bearishScore: 0, signals: [], hasPrimary: false };
+    const WEIGHTS = getWeights();
     const w = (WEIGHTS[s.source] || 1.0) * s.score;
 
     if (s.direction === 'bearish') {

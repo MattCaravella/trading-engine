@@ -7,6 +7,7 @@ const { evaluateTrade, reconcileStops, recordTradeExecuted, updatePeakEquity } =
 const { processClosedTrades } = require('./postmortem');
 const { tracker } = require('./signal_lifecycle');
 const { isSystemHealthy } = require('./signal_cache');
+const { isStrategyKilled } = require('./strategy_calibrator');
 
 const envPath = path.join(__dirname, '.env');
 fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
@@ -211,6 +212,13 @@ async function runTradeCycle(getCandidatesFn) {
       if (sig && sig.state !== 'CONFIRMED') continue;
 
       const top = c.signals.sort((a,b)=>b.score-a.score)[0];
+
+      // Check if the primary source strategy has been killed by calibrator
+      if (top && isStrategyKilled(top.source)) {
+        console.log(`  [SKIP] ${c.ticker} — strategy '${top.source}' killed by calibrator (losing streak)`);
+        tracker.reject(c._lifecycleId, 'REJECTED_RISK', `Strategy ${top.source} disabled`);
+        continue;
+      }
 
       // Governor evaluation (drawdown, sector, daily cap, liquidity)
       const govResult = await evaluateTrade(c.ticker, equity, positions, openOrders);
