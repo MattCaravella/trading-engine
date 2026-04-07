@@ -2,6 +2,7 @@ const { isPreMarket, isMarketHours, isAfterHours, isWeekend, timeLabel, etTimeSt
 const { refreshSlow, refreshFast, getCandidates, cacheStatus } = require('./signal_cache');
 const { runTradeCycle, placeOvernightTrailingStops }           = require('./engine');
 const { generateSummary }                                      = require('./daily_summary');
+const { generateForecast }                                     = require('./daily_forecast');
 
 const FAST_REFRESH_MS  = 30 * 60 * 1000;
 const TRADE_EXEC_MS    = 5  * 60 * 1000;
@@ -53,6 +54,7 @@ async function doAfterHours() {
   await refreshSlow();
   await placeOvernightTrailingStops();
   await generateSummary();
+  await generateForecast();
   state.afterHoursDone = true;
 }
 
@@ -91,7 +93,7 @@ console.log('║  8:00 AM ET   → Slow sources (congress/contracts/lobby) ║')
 console.log('║  9:30 AM ET   → Market open fast refresh                 ║');
 console.log('║  Every 5 min  → Trade execution (market hours only)      ║');
 console.log('║  Every 30 min → Fast refresh (bollinger/MA/pairs)        ║');
-console.log('║  4:00 PM ET   → After-hours: summary + trailing stops    ║');
+console.log('║  4:00 PM ET   → After-hours: summary + forecast + stops  ║');
 console.log('║  Overnight    → Idle                                     ║');
 console.log('╚══════════════════════════════════════════════════════════╝');
 console.log(`\nCurrent time: ${etTimeString()} ET — ${timeLabel()}\n`);
