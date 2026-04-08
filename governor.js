@@ -26,7 +26,7 @@ const ALPACA_URL    = process.env.ALPACA_BASE_URL;
 // ─── Configuration ───────────────────────────────────────────────────────────
 const MAX_DRAWDOWN_PCT     = 8;       // 8% from peak → halt new buys
 const MAX_SECTOR_PCT       = 25;      // 25% max in any sector
-const MAX_DAILY_TRADES     = 6;       // Max new buys per day
+const MAX_DAILY_TRADES     = 10;      // Max new buys per day (increased for faster deployment)
 const MIN_DAILY_DOLLAR_VOL = 1000000; // Skip stocks with <$1M avg daily dollar volume
 const MAX_CORRELATED       = 3;       // Max positions with correlation > 0.70
 const CORR_THRESHOLD       = 0.70;    // Correlation threshold for "highly correlated"

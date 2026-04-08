@@ -18,8 +18,9 @@ const ALPACA_KEY    = process.env.ALPACA_API_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY;
 const ALPACA_URL    = process.env.ALPACA_BASE_URL;
 
-const MAX_POSITIONS  = 12;    // 12 positions × 8% = 96% deployed
+const MAX_POSITIONS  = 20;    // Allow up to 20 while old small positions rotate out
 const POSITION_PCT   = 0.08;  // 8% of equity per position (~$8k on $100k account)
+const MAX_EXPOSURE   = 0.96;  // Stop buying once 96% of equity is deployed
 const TRAIL_PERCENT  = 4;
 const HARD_STOP_PCT  = 6;     // slightly wider stop — room to breathe
 const COOLDOWN_HOURS = 24;
@@ -187,6 +188,13 @@ async function runTradeCycle(getCandidatesFn) {
     const ranked    = await getCandidatesFn();
     const candidates = ranked.filter(t=>t.netScore>=BUY_THRESHOLD);
     const openTickers = new Set(positions.map(p=>p.symbol));
+
+    // Check exposure — stop buying once 96% deployed
+    const totalInvested = positions.reduce((s, p) => s + Math.abs(parseFloat(p.market_value || 0)), 0);
+    const exposurePct = totalInvested / equity;
+    console.log(`[Engine] Exposure: $${totalInvested.toLocaleString()} / $${equity.toLocaleString()} = ${(exposurePct * 100).toFixed(1)}%`);
+    if (exposurePct >= MAX_EXPOSURE) { console.log(`[Engine] Target exposure reached (${(exposurePct*100).toFixed(1)}% >= ${MAX_EXPOSURE*100}%).`); saveState(state); tracker.logCycle(equity, positions.length); return; }
+
     const slots = MAX_POSITIONS - openTickers.size;
     if (slots <= 0) { console.log('[Engine] Max positions reached.'); saveState(state); tracker.logCycle(equity, positions.length); return; }
 
