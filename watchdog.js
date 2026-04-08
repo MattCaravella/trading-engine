@@ -52,6 +52,19 @@ function startScheduler() {
   });
 }
 
+// Single-instance guard
+const PID_FILE = path.join(__dirname, 'watchdog.pid');
+try {
+  if (fs.existsSync(PID_FILE)) {
+    const oldPid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim());
+    if (oldPid && !isNaN(oldPid)) {
+      try { process.kill(oldPid, 0); process.kill(oldPid, 'SIGTERM'); } catch {}
+    }
+  }
+} catch {}
+fs.writeFileSync(PID_FILE, String(process.pid));
+process.on('exit', () => { try { fs.unlinkSync(PID_FILE); } catch {} });
+
 log('Watchdog online');
 startDashboard();
 startScheduler();
