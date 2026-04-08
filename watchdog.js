@@ -6,7 +6,8 @@ const { spawn } = require('child_process');
 const fs         = require('fs');
 const path       = require('path');
 
-const SCHEDULER   = path.join(__dirname, 'scheduler.js');
+const SCHEDULER    = path.join(__dirname, 'scheduler.js');
+const DASHBOARD    = path.join(__dirname, 'dashboard.js');
 const WATCHDOG_LOG = path.join(__dirname, 'watchdog.log');
 const RESTART_DELAY_MS = 5000;
 
@@ -17,28 +18,40 @@ function log(msg) {
   fs.appendFileSync(WATCHDOG_LOG, line);
 }
 
-let restarts = 0;
-
-function start() {
-  log(`Starting scheduler.js (restart #${restarts})`);
-
-  const child = spawn(process.execPath, [SCHEDULER], {
-    cwd: __dirname,
-    stdio: 'inherit',   // share stdout/stderr with watchdog (so logs still go to redirected files)
-  });
-
+// ── Dashboard — start once, restart on crash ────────────────────────────────
+let dashboardRestarts = 0;
+function startDashboard() {
+  log(`Starting dashboard.js (restart #${dashboardRestarts})`);
+  const child = spawn(process.execPath, [DASHBOARD], { cwd: __dirname, stdio: 'inherit' });
   child.on('exit', (code, signal) => {
-    restarts++;
-    log(`scheduler.js exited — code=${code} signal=${signal}. Restarting in ${RESTART_DELAY_MS / 1000}s...`);
-    setTimeout(start, RESTART_DELAY_MS);
+    dashboardRestarts++;
+    log(`dashboard.js exited — code=${code} signal=${signal}. Restarting in ${RESTART_DELAY_MS / 1000}s...`);
+    setTimeout(startDashboard, RESTART_DELAY_MS);
   });
-
   child.on('error', (err) => {
-    restarts++;
+    dashboardRestarts++;
+    log(`dashboard.js error — ${err.message}. Restarting in ${RESTART_DELAY_MS / 1000}s...`);
+    setTimeout(startDashboard, RESTART_DELAY_MS);
+  });
+}
+
+// ── Scheduler — start once, restart on crash ────────────────────────────────
+let schedulerRestarts = 0;
+function startScheduler() {
+  log(`Starting scheduler.js (restart #${schedulerRestarts})`);
+  const child = spawn(process.execPath, [SCHEDULER], { cwd: __dirname, stdio: 'inherit' });
+  child.on('exit', (code, signal) => {
+    schedulerRestarts++;
+    log(`scheduler.js exited — code=${code} signal=${signal}. Restarting in ${RESTART_DELAY_MS / 1000}s...`);
+    setTimeout(startScheduler, RESTART_DELAY_MS);
+  });
+  child.on('error', (err) => {
+    schedulerRestarts++;
     log(`scheduler.js error — ${err.message}. Restarting in ${RESTART_DELAY_MS / 1000}s...`);
-    setTimeout(start, RESTART_DELAY_MS);
+    setTimeout(startScheduler, RESTART_DELAY_MS);
   });
 }
 
 log('Watchdog online');
-start();
+startDashboard();
+startScheduler();
