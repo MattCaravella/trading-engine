@@ -150,24 +150,18 @@ async function getApiData() {
 }
 
 async function getIndexData() {
-  const DATA = 'https://data.alpaca.markets';
   const headers = { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET };
-  const syms = 'SPY,QQQ,DIA';
-  const [bars] = await Promise.all([
-    fetch(`${DATA}/v2/stocks/bars?symbols=${syms}&timeframe=1Day&limit=2&feed=iex`, { headers }).then(r => r.json()).catch(() => null),
-  ]);
+  const snap = await fetch('https://data.alpaca.markets/v2/stocks/snapshots?symbols=SPY,QQQ,DIA&feed=iex', { headers })
+    .then(r => r.json()).catch(() => null);
   const result = {};
   for (const sym of ['SPY','QQQ','DIA']) {
-    const symBars = bars?.bars?.[sym] || [];
-    if (symBars.length >= 2) {
-      const prev  = parseFloat(symBars[symBars.length - 2].c);
-      const curr  = parseFloat(symBars[symBars.length - 1].c);
-      const chg   = curr - prev;
-      const chgPct = (chg / prev) * 100;
-      result[sym] = { price: curr.toFixed(2), change: chg.toFixed(2), changePct: chgPct.toFixed(2) };
-    } else if (symBars.length === 1) {
-      const curr = parseFloat(symBars[0].c);
-      result[sym] = { price: curr.toFixed(2), change: '0.00', changePct: '0.00' };
+    const s    = snap?.[sym];
+    const curr = parseFloat(s?.dailyBar?.c || s?.latestTrade?.p || 0);
+    const prev = parseFloat(s?.prevDailyBar?.c || curr);
+    if (curr > 0) {
+      const chg    = curr - prev;
+      const chgPct = prev > 0 ? (chg / prev * 100) : 0;
+      result[sym]  = { price: curr.toFixed(2), change: chg.toFixed(2), changePct: chgPct.toFixed(2) };
     } else {
       result[sym] = { price: '—', change: '0.00', changePct: '0.00' };
     }
