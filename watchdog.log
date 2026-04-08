@@ -620,3 +620,7 @@
 [2026-04-08T19:08:34.925Z] Watchdog online
 [2026-04-08T19:08:34.926Z] Starting dashboard.js (restart #0)
 [2026-04-08T19:08:34.932Z] Starting scheduler.js (restart #0)
+[2026-04-08T19:10:16.226Z] dashboard.js exited — code=4294967295 signal=null. Restarting in 5s...
+[2026-04-08T19:10:20.512Z] Watchdog online
+[2026-04-08T19:10:20.513Z] Starting dashboard.js (restart #0)
+[2026-04-08T19:10:20.518Z] Starting scheduler.js (restart #0)
