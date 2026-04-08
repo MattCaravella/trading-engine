@@ -259,6 +259,50 @@ const HTML = `<!DOCTYPE html>
   .exposure-pct { font-size: 40px; font-weight: bold; letter-spacing: 2px; }
 
   .divider { height: 1px; background: var(--border); margin: 10px 0; }
+
+  /* ── Translucent value boxes ── */
+  .val-box {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 14px; border-radius: 6px;
+    font-weight: bold; letter-spacing: 0.5px;
+    backdrop-filter: blur(4px);
+  }
+  .val-box-green {
+    background: rgba(0,230,118,0.12);
+    border: 1px solid rgba(0,230,118,0.30);
+    color: var(--green);
+  }
+  .val-box-red {
+    background: rgba(255,82,82,0.12);
+    border: 1px solid rgba(255,82,82,0.30);
+    color: var(--red);
+  }
+  .val-box-blue {
+    background: rgba(41,121,255,0.12);
+    border: 1px solid rgba(41,121,255,0.30);
+    color: #7eb3ff;
+  }
+  .val-box-yellow {
+    background: rgba(255,202,40,0.12);
+    border: 1px solid rgba(255,202,40,0.30);
+    color: var(--yellow);
+  }
+  .arrow { font-size: 1.1em; line-height: 1; }
+
+  /* ── P&L badge in table ── */
+  .pnl-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 8px; border-radius: 4px; font-size: 13px; font-weight: 600;
+  }
+  .pnl-badge-green { background: rgba(0,230,118,0.12); border: 1px solid rgba(0,230,118,0.25); color: var(--green); }
+  .pnl-badge-red   { background: rgba(255,82,82,0.12);  border: 1px solid rgba(255,82,82,0.25);  color: var(--red); }
+
+  /* ── Stat value boxes ── */
+  .stat-val-box {
+    display: inline-block; padding: 2px 10px; border-radius: 4px;
+    font-weight: bold; font-size: 14px;
+    background: rgba(41,121,255,0.10); border: 1px solid rgba(41,121,255,0.20); color: #9ec8ff;
+  }
 </style>
 </head>
 <body>
@@ -274,32 +318,32 @@ const HTML = `<!DOCTYPE html>
 
 <!-- P&L Banner -->
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border)">
-  <div class="panel" style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px">
-    <div>
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Today's P&amp;L</div>
-      <div id="banner-day-pnl" style="font-size:28px;font-weight:bold;letter-spacing:1px">—</div>
+  <div class="panel" style="display:flex;align-items:center;justify-content:space-around;padding:14px 20px;flex-wrap:wrap;gap:12px">
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Today's P&amp;L</div>
+      <div id="banner-day-pnl" class="val-box val-box-blue" style="font-size:24px">—</div>
     </div>
-    <div style="text-align:right">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Today %</div>
-      <div id="banner-day-pct" style="font-size:28px;font-weight:bold">—</div>
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Today %</div>
+      <div id="banner-day-pct" class="val-box val-box-blue" style="font-size:24px">—</div>
     </div>
-    <div style="text-align:right">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Unrealized</div>
-      <div id="banner-unrealized" style="font-size:28px;font-weight:bold">—</div>
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Unrealized</div>
+      <div id="banner-unrealized" class="val-box val-box-blue" style="font-size:24px">—</div>
     </div>
   </div>
-  <div class="panel" style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px">
-    <div>
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Overall P&amp;L</div>
-      <div id="banner-total-pnl" style="font-size:28px;font-weight:bold;letter-spacing:1px">—</div>
+  <div class="panel" style="display:flex;align-items:center;justify-content:space-around;padding:14px 20px;flex-wrap:wrap;gap:12px">
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Overall P&amp;L</div>
+      <div id="banner-total-pnl" class="val-box val-box-blue" style="font-size:24px">—</div>
     </div>
-    <div style="text-align:right">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Overall %</div>
-      <div id="banner-total-pct" style="font-size:28px;font-weight:bold">—</div>
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Overall %</div>
+      <div id="banner-total-pct" class="val-box val-box-blue" style="font-size:24px">—</div>
     </div>
-    <div style="text-align:right">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Starting Capital</div>
-      <div style="font-size:20px;font-weight:bold;color:var(--dim)">$100,000</div>
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Starting Capital</div>
+      <div class="val-box val-box-blue" style="font-size:24px">$100,000</div>
     </div>
   </div>
 </div>
@@ -312,10 +356,10 @@ const HTML = `<!DOCTYPE html>
     <div class="big-number" id="equity">$—</div>
     <div class="sub-number" id="day-pnl">Day P&amp;L: —</div>
     <div class="divider"></div>
-    <div class="stat-row"><span class="stat-label">Buying Power</span><span class="stat-value" id="bp">—</span></div>
-    <div class="stat-row"><span class="stat-label">Invested</span><span class="stat-value" id="invested">—</span></div>
-    <div class="stat-row"><span class="stat-label">Open Positions</span><span class="stat-value" id="pos-count">—</span></div>
-    <div class="stat-row"><span class="stat-label">Open Orders</span><span class="stat-value" id="ord-count">—</span></div>
+    <div class="stat-row"><span class="stat-label">Buying Power</span><span class="stat-val-box" id="bp">—</span></div>
+    <div class="stat-row"><span class="stat-label">Invested</span><span class="stat-val-box" id="invested">—</span></div>
+    <div class="stat-row"><span class="stat-label">Open Positions</span><span class="stat-val-box" id="pos-count">—</span></div>
+    <div class="stat-row"><span class="stat-label">Open Orders</span><span class="stat-val-box" id="ord-count">—</span></div>
   </div>
 
   <div class="panel">
@@ -441,16 +485,21 @@ async function refresh() {
     document.getElementById('last-update').textContent = 'Updated ' + data.time;
 
     // P&L Banner
-    const sign = v => v >= 0 ? '+' : '';
+    const sign  = v => v >= 0 ? '+' : '';
+    const arrow = v => v >= 0 ? '▲' : '▼';
+    const boxClass = v => v >= 0 ? 'val-box val-box-green' : 'val-box val-box-red';
+
     function setPnl(id, val) {
       const el = document.getElementById(id);
-      el.textContent = sign(val) + fmtDollar(val);
-      el.style.color = val >= 0 ? 'var(--green)' : 'var(--red)';
+      el.className = boxClass(val) + ' ' + el.style.cssText; // preserve inline font-size
+      el.innerHTML = \`<span class="arrow">\${arrow(val)}</span> \${sign(val)}\${fmtDollar(val)}\`;
+      el.style.fontSize = '24px';
     }
     function setPct(id, val) {
       const el = document.getElementById(id);
-      el.textContent = sign(val) + fmt(val) + '%';
-      el.style.color = val >= 0 ? 'var(--green)' : 'var(--red)';
+      el.className = boxClass(val);
+      el.innerHTML = \`<span class="arrow">\${arrow(val)}</span> \${sign(val)}\${fmt(val)}%\`;
+      el.style.fontSize = '24px';
     }
     setPnl('banner-day-pnl',    data.dayPnl);
     setPct('banner-day-pct',    data.dayPnlPct);
@@ -504,15 +553,20 @@ async function refresh() {
       tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--dim);padding:20px">No open positions</td></tr>';
     } else {
       tbody.innerHTML = data.positions.map(p => {
-        const pnlClass = colorClass(p.pnlPct);
-        const isTiny   = parseFloat(p.mv) < 1000;
+        const up     = parseFloat(p.pnlPct) >= 0;
+        const ar     = up ? '▲' : '▼';
+        const badge  = up ? 'pnl-badge pnl-badge-green' : 'pnl-badge pnl-badge-red';
+        const isTiny = parseFloat(p.mv) < 1000;
+        const priceArrow = parseFloat(p.current) >= parseFloat(p.entry)
+          ? '<span style="color:var(--green);margin-left:4px">▲</span>'
+          : '<span style="color:var(--red);margin-left:4px">▼</span>';
         return \`<tr>
           <td>\${p.symbol}\${isTiny ? ' <span class="tag-tiny">(legacy)</span>' : ''}</td>
           <td>\${p.qty}</td>
           <td>$\${p.entry}</td>
-          <td>$\${p.current}</td>
+          <td>$\${p.current}\${priceArrow}</td>
           <td>$\${parseInt(p.mv).toLocaleString()}</td>
-          <td class="\${pnlClass}">\${p.pnlPct >= 0 ? '+' : ''}\${p.pnlPct}%<br><span style="font-size:10px">\${p.pnl >= 0 ? '+' : ''}$\${fmt(p.pnl)}</span></td>
+          <td><span class="\${badge}">\${ar} \${p.pnlPct >= 0 ? '+' : ''}\${p.pnlPct}%</span><br><span style="font-size:11px;color:\${up?'var(--green)':'var(--red)'}">\${p.pnl >= 0 ? '+' : ''}$\${fmt(p.pnl)}</span></td>
           <td style="color:var(--dim)">\${p.stopPrice !== '—' ? '$'+p.stopPrice : '—'}</td>
         </tr>\`;
       }).join('');
