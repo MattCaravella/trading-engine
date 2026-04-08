@@ -565,6 +565,15 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.log(`[Dashboard] Port ${PORT} in use — retrying in 10s...`);
+    setTimeout(() => server.listen(PORT, '127.0.0.1'), 10000);
+  } else {
+    console.error('[Dashboard] Server error:', err.message);
+  }
+});
+
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[Dashboard] Running at http://localhost:${PORT}`);
 });
