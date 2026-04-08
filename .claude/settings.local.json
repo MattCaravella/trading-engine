@@ -38,7 +38,9 @@
       "Bash(powershell -Command \"Start-Process -FilePath 'node' -ArgumentList 'C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\dashboard.js' -WindowStyle Hidden\")",
       "Bash(node -e \"fetch\\('http://localhost:3000'\\).then\\(r=>console.log\\('Dashboard OK'\\)\\).catch\\(e=>console.log\\('Dashboard FAIL:',e.message\\)\\)\")",
       "Bash(powershell -Command \"Stop-Process -Id 11424 -Force\")",
-      "Bash(node dashboard.js)"
+      "Bash(node dashboard.js)",
+      "Bash(powershell -Command 'Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }')",
+      "Bash(node -e \"fetch\\('http://localhost:3001/api/status'\\).then\\(r=>r.json\\(\\)\\).then\\(d=>{ console.log\\('Dashboard OK'\\); console.log\\('SPY:',d.indices?.SPY?.price, d.indices?.SPY?.changePct+'%'\\); console.log\\('QQQ:',d.indices?.QQQ?.price, d.indices?.QQQ?.changePct+'%'\\); console.log\\('DIA:',d.indices?.DIA?.price, d.indices?.DIA?.changePct+'%'\\); }\\).catch\\(e=>console.log\\('FAIL:',e.message\\)\\)\")"
     ]
   }
 }

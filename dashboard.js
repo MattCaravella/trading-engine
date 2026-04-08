@@ -149,13 +149,40 @@ async function getApiData() {
   return { equity, bp, dayPnl, dayPnlPct, totalPnl, totalPnlPct, unrealizedPnl, invested, exposure, positions: posData, openOrders: ord.length };
 }
 
+async function getIndexData() {
+  const DATA = 'https://data.alpaca.markets';
+  const headers = { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET };
+  const syms = 'SPY,QQQ,DIA';
+  const [bars] = await Promise.all([
+    fetch(`${DATA}/v2/stocks/bars?symbols=${syms}&timeframe=1Day&limit=2&feed=iex`, { headers }).then(r => r.json()).catch(() => null),
+  ]);
+  const result = {};
+  for (const sym of ['SPY','QQQ','DIA']) {
+    const symBars = bars?.bars?.[sym] || [];
+    if (symBars.length >= 2) {
+      const prev  = parseFloat(symBars[symBars.length - 2].c);
+      const curr  = parseFloat(symBars[symBars.length - 1].c);
+      const chg   = curr - prev;
+      const chgPct = (chg / prev) * 100;
+      result[sym] = { price: curr.toFixed(2), change: chg.toFixed(2), changePct: chgPct.toFixed(2) };
+    } else if (symBars.length === 1) {
+      const curr = parseFloat(symBars[0].c);
+      result[sym] = { price: curr.toFixed(2), change: '0.00', changePct: '0.00' };
+    } else {
+      result[sym] = { price: '—', change: '0.00', changePct: '0.00' };
+    }
+  }
+  return result;
+}
+
 async function getStatus() {
-  const [api, sched] = await Promise.all([getApiData(), Promise.resolve(getSchedulerInfo())]);
+  const [api, sched, indices] = await Promise.all([getApiData(), Promise.resolve(getSchedulerInfo()), getIndexData()]);
   return {
     time: etTime(),
     marketStatus: marketStatus(),
     ...api,
     scheduler: sched,
+    indices,
   };
 }
 
@@ -260,6 +287,15 @@ const HTML = `<!DOCTYPE html>
 
   .divider { height: 1px; background: var(--border); margin: 10px 0; }
 
+  /* ── Index ticker bar ── */
+  .ticker-bar { background: #07101a; border-bottom: 1px solid var(--border); display: flex; justify-content: space-around; align-items: center; padding: 12px 20px; }
+  .ticker-item { display: flex; align-items: center; gap: 12px; }
+  .ticker-divider { width: 1px; height: 30px; background: var(--border); }
+  .ticker-name { color: var(--bright); font-weight: bold; font-size: 16px; letter-spacing: 0.5px; }
+  .ticker-sym  { color: var(--dim); font-size: 12px; }
+  .ticker-price { font-size: 20px; font-weight: bold; color: var(--bright); font-variant-numeric: tabular-nums; }
+  .ticker-change { display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px; border-radius: 5px; font-size: 14px; font-weight: bold; }
+
   /* ── Translucent value boxes ── */
   .val-box {
     display: inline-flex; align-items: center; gap: 6px;
@@ -314,6 +350,30 @@ const HTML = `<!DOCTYPE html>
     <div class="et-time" id="et-time">-- : -- : -- ET</div>
   </div>
   <div class="last-update" id="last-update">Connecting...</div>
+</div>
+
+<!-- Index Ticker Bar -->
+<div class="ticker-bar">
+  <div class="ticker-item">
+    <span class="ticker-name">S&amp;P 500</span>
+    <span class="ticker-sym">SPY</span>
+    <span id="idx-spy-price" class="ticker-price">—</span>
+    <span id="idx-spy-change" class="ticker-change val-box-blue">—</span>
+  </div>
+  <div class="ticker-divider"></div>
+  <div class="ticker-item">
+    <span class="ticker-name">NASDAQ</span>
+    <span class="ticker-sym">QQQ</span>
+    <span id="idx-qqq-price" class="ticker-price">—</span>
+    <span id="idx-qqq-change" class="ticker-change val-box-blue">—</span>
+  </div>
+  <div class="ticker-divider"></div>
+  <div class="ticker-item">
+    <span class="ticker-name">DOW</span>
+    <span class="ticker-sym">DIA</span>
+    <span id="idx-dia-price" class="ticker-price">—</span>
+    <span id="idx-dia-change" class="ticker-change val-box-blue">—</span>
+  </div>
 </div>
 
 <!-- P&L Banner -->
@@ -483,6 +543,19 @@ async function refresh() {
     badge.textContent = data.marketStatus;
     badge.className   = marketBadgeClass(data.marketStatus);
     document.getElementById('last-update').textContent = 'Updated ' + data.time;
+
+    // Index Ticker Bar
+    if (data.indices) {
+      const idxMap = { spy: data.indices.SPY, qqq: data.indices.QQQ, dia: data.indices.DIA };
+      for (const [key, idx] of Object.entries(idxMap)) {
+        if (!idx || idx.price === '—') continue;
+        const up = parseFloat(idx.changePct) >= 0;
+        document.getElementById(\`idx-\${key}-price\`).textContent = '$' + idx.price;
+        const chgEl = document.getElementById(\`idx-\${key}-change\`);
+        chgEl.className = 'ticker-change ' + (up ? 'val-box-green' : 'val-box-red');
+        chgEl.innerHTML = (up ? '▲ +' : '▼ ') + idx.changePct + '%';
+      }
+    }
 
     // P&L Banner
     const sign  = v => v >= 0 ? '+' : '';
