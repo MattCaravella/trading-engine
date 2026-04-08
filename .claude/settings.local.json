@@ -24,7 +24,11 @@
       "Bash(node -e \"const e = require\\(''./engine''\\); console.log\\(''Engine loaded OK''\\); console.log\\(''Exports:'', Object.keys\\(e\\).join\\('', ''\\)\\);\")",
       "Bash(powershell -Command \"Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2; Start-Process -NoNewWindow -FilePath ''node'' -ArgumentList ''scheduler.js'' -WorkingDirectory ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading'' -RedirectStandardOutput ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' -RedirectStandardError ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler_err.log''; Start-Sleep 15; Get-Content ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' | Select-Object -Last 35\")",
       "Bash(powershell -Command \"Get-Process node -ErrorAction SilentlyContinue | Select-Object Id,CPU,StartTime\")",
-      "Bash(powershell -Command \"Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2; Start-Process -NoNewWindow -FilePath ''node'' -ArgumentList ''scheduler.js'' -WorkingDirectory ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading'' -RedirectStandardOutput ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' -RedirectStandardError ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler_err.log''; Start-Sleep 15; Get-Content ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' | Select-Object -Last 40\")"
+      "Bash(powershell -Command \"Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2; Start-Process -NoNewWindow -FilePath ''node'' -ArgumentList ''scheduler.js'' -WorkingDirectory ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading'' -RedirectStandardOutput ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' -RedirectStandardError ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler_err.log''; Start-Sleep 15; Get-Content ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' | Select-Object -Last 40\")",
+      "Bash(node -e \"const m=require\\(''./market_hours''\\);console.log\\(''Time:'',m.etTimeString\\(\\),''Label:'',m.timeLabel\\(\\),''isMarket:'',m.isMarketHours\\(\\),''isPre:'',m.isPreMarket\\(\\),''Components:'',JSON.stringify\\(m.getETComponents\\(\\)\\)\\);\")",
+      "Bash(tasklist /fi 'imagename eq node.exe')",
+      "Bash(tasklist /v /fi 'imagename eq node.exe')",
+      "Bash(wmic process:*)"
     ]
   }
 }
