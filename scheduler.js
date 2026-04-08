@@ -102,19 +102,8 @@ console.log('║  Overnight    → Idle                                     ║'
 console.log('╚══════════════════════════════════════════════════════════╝');
 console.log(`\nCurrent time: ${etTimeString()} ET — ${timeLabel()}\n`);
 
-// Single-instance guard — kill any existing scheduler process
-const { execSync } = require('child_process');
-const PID_FILE = path.join(__dirname, 'scheduler.pid');
-if (fs.existsSync(PID_FILE)) {
-  const oldPid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim());
-  if (oldPid && !isNaN(oldPid)) {
-    try { process.kill(oldPid, 0); execSync(`taskkill /PID ${oldPid} /F`, { stdio: 'pipe' }); console.log(`[Scheduler] Killed old instance PID ${oldPid}`); } catch {}
-  }
-}
-fs.writeFileSync(PID_FILE, String(process.pid));
-process.on('exit', () => { try { fs.unlinkSync(PID_FILE); } catch {} });
-
 // Auto-backup to GitHub on startup
+const { execSync } = require('child_process');
 function gitBackup() {
   try {
     execSync('git add -A', { cwd: __dirname, stdio: 'pipe' });
