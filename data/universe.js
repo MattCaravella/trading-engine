@@ -52,7 +52,26 @@ const SP500 = [
   'GLD','SLV','USO','TLT','HYG','IEF','EEM','EFA','VNQ','ARKK','ARKG','ARKW'
 ];
 
+const MIDCAP = [
+  // Regional Banks — rate-driven, low tariff correlation
+  'BOKF','FFIN','WSFS','SNV','PNFP','CVBF','IBOC','SFNC','CATY','FULT','UMBF','CBSH','WTFC','NBTB','FBIZ',
+  // Mid-cap Industrials — domestic demand, less macro sweep
+  'SAIA','WERN','HUBG','LSTR','MATX','RXO','GXO','AOS','NVT','AIMC','AAON','TREX','BECN','IBP',
+  // Specialty Healthcare — dental, instruments, specialty pharma
+  'PDCO','HSIC','PRGO','JAZZ','ACAD','EXEL','ITCI','NTRA','PRVA','GKOS','MMSI','INVA',
+  // Mid-cap Software / Fintech — SMB-focused, lower beta than MSFT/GOOGL
+  'PCTY','PAYC','CDAY','JAMF','QLYS','SPSC','QTWO','EVTC','NEWR',
+  // Specialty Energy — E&P names, less correlated to macro than XOM/CVX
+  'SM','CIVI','MTDR','RRC','CRGY','VTLE','MGY',
+  // Specialty Retail / Consumer — value and niche
+  'BOOT','HIBB','CATO','ODP','BJ','PSMT',
+  // Specialty Materials / Chemicals
+  'IOSP','KWR','TROX','HWKN','ASIX',
+  // REITs / Infrastructure — income-driven, low equity beta
+  'NNN','STAG','IIPR','COLD','EPRT','NTST','GOOD',
+];
+
 // Deduplicate
-const UNIVERSE = [...new Set(SP500)];
+const UNIVERSE = [...new Set([...SP500, ...MIDCAP])];
 
 module.exports = { UNIVERSE };
