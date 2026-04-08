@@ -30,7 +30,9 @@
       "Bash(tasklist /v /fi 'imagename eq node.exe')",
       "Bash(wmic process:*)",
       "Bash(node -e \"const {UNIVERSE} = require\\(''./data/universe''\\); console.log\\(''Universe size:'', UNIVERSE.length, ''tickers''\\);\")",
-      "Bash(powershell -Command \"Start-Process -FilePath ''node'' -ArgumentList ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.js'' -RedirectStandardOutput ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' -RedirectStandardError ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler_err.log'' -WindowStyle Hidden\")"
+      "Bash(powershell -Command \"Start-Process -FilePath ''node'' -ArgumentList ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.js'' -RedirectStandardOutput ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' -RedirectStandardError ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler_err.log'' -WindowStyle Hidden\")",
+      "Bash(taskkill /F /IM node.exe)",
+      "Bash(powershell -Command \"Start-Process -FilePath ''node'' -ArgumentList ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\watchdog.js'' -RedirectStandardOutput ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler.log'' -RedirectStandardError ''C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\scheduler_err.log'' -WindowStyle Hidden\")"
     ]
   }
 }
