@@ -71,7 +71,26 @@ const MIDCAP = [
   'NNN','STAG','IIPR','COLD','EPRT','NTST','GOOD',
 ];
 
+const SMALLCAP = [
+  // Community & Regional Banks — hyper-local, rate-sensitive, low macro correlation
+  'BANF','BRKL','HAFC','FBMS','IBCP','FFBC','UVSP','CBTX','PFIS','HONE','ESSA','SBCF','FXNC','SMBC',
+  // Small Industrials — construction, transport, specialty manufacturing
+  'MYRG','STRL','ROAD','PRIM','SHYF','ZEUS','KFRC','NVEE','GTES','DXC','FTDR',
+  // Small Healthcare — specialty pharma, devices, services
+  'AXSM','IMVT','PRAX','ARDX','VRNA','HALO','KNSA','CLDX','ACRS','TARS','OMCL','LMAT',
+  // Small Tech & Software — niche SaaS, networking, cybersecurity
+  'ATEN','CEVA','ALRM','BAND','RSKD','TASK','CINT','ARLO','PCMI','SMAR','MITK',
+  // Small Energy — domestic E&P, low correlation to macro
+  'MNRL','GPRE','REX','REPX','TPVG','VTLE',
+  // Small Consumer — restaurants, specialty retail, branded food
+  'PTLO','FRPT','CENTA','RICK','BOWL','PLAY','DINE','CAKE',
+  // Small Materials & Specialty Chemicals
+  'KOP','ASIX','HWKN','IOSP',
+  // Small REITs — niche property types, income-driven
+  'ILPT','GMRE','NTST','BRSP','GOOD','APLE',
+];
+
 // Deduplicate
-const UNIVERSE = [...new Set([...SP500, ...MIDCAP])];
+const UNIVERSE = [...new Set([...SP500, ...MIDCAP, ...SMALLCAP])];
 
 module.exports = { UNIVERSE };

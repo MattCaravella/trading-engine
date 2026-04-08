@@ -29,7 +29,7 @@ const MAX_SECTOR_PCT       = 25;      // 25% max in any sector
 const MAX_DAILY_TRADES     = 10;      // Max new buys per day (increased for faster deployment)
 const MIN_DAILY_DOLLAR_VOL = 1000000; // Skip stocks with <$1M avg daily dollar volume
 const MAX_CORRELATED       = 6;       // Max positions with correlation > 0.70
-const CORR_THRESHOLD       = 0.70;    // Correlation threshold for "highly correlated"
+const CORR_THRESHOLD       = 0.85;    // Correlation threshold for "highly correlated" (temporarily raised from 0.70)
 const MIN_CORR_POSITION_VAL = 500;    // Only check correlation against positions worth > $500
 
 const STATE_FILE = path.join(__dirname, 'trade_history/governor_state.json');
