@@ -6,7 +6,7 @@ const flights       = require('./monitors/flights');
 const trending      = require('./monitors/trending');
 const bollinger     = require('./strategies/bollinger');
 const ma_crossover  = require('./strategies/ma_crossover');
-const pairs_trading = require('./strategies/pairs_trading');
+const relative_value = require('./strategies/pairs_trading');
 const insider_buying= require('./strategies/insider_buying');
 const downtrend     = require('./strategies/downtrend');
 
@@ -14,8 +14,8 @@ const BUY_THRESHOLD = 70;
 
 // Primary sources: can trigger a buy on their own
 // Overlay sources: can only BOOST a ticker that already has a primary signal
-const PRIMARY_SOURCES = new Set(['bollinger', 'ma_crossover', 'pairs_trading', 'downtrend', 'insider_buying', 'techsector']);
-const OVERLAY_SOURCES = new Set(['congress', 'govcontracts', 'lobbying', 'flights', 'trending', 'offexchange']);
+const PRIMARY_SOURCES = new Set(['bollinger', 'ma_crossover', 'relative_value', 'downtrend', 'insider_buying', 'techsector']);
+const OVERLAY_SOURCES = new Set(['congress', 'govcontracts', 'lobbying', 'flights', 'trending', 'offexchange', 'news_sentiment']);
 
 // Overlay cap: alt-data can add at most this much to a ticker's score
 const OVERLAY_CAP = 25;
@@ -73,7 +73,7 @@ function aggregateByTicker(signals) {
 
 async function collectAllSignals() {
   const all = [];
-  const sources = { congress, govcontracts, lobbying, flights, trending, bollinger, ma_crossover, pairs_trading, insider_buying, downtrend };
+  const sources = { congress, govcontracts, lobbying, flights, trending, bollinger, ma_crossover, relative_value, insider_buying, downtrend };
   await Promise.allSettled(Object.entries(sources).map(async ([name, mod]) => {
     try { const s = await mod.getSignals(); for (const sig of s) all.push({ ...sig, source: name }); }
     catch (e) { console.warn(`  [${name}] failed: ${e.message}`); }

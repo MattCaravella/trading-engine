@@ -19,28 +19,92 @@ const path = require('path');
 const LEDGER_FILE  = path.join(__dirname, 'trade_history/performance_ledger.json');
 const SUMMARY_FILE = path.join(__dirname, 'trade_history/performance_summary.json');
 
+// ─── Alpaca API for fetching filled order prices ──────────────────────────────
+const envRaw = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
+const envVars = {};
+envRaw.split('\n').forEach(l => { const [k,...v] = l.split('='); if (k && v.length) envVars[k.trim()] = v.join('=').trim(); });
+const ALPACA_URL = envVars.ALPACA_BASE_URL || 'https://paper-api.alpaca.markets';
+const ALPACA_KEY = envVars.ALPACA_API_KEY;
+const ALPACA_SECRET = envVars.ALPACA_SECRET_KEY;
+
+async function fetchFilledPrice(orderId) {
+  try {
+    const res = await fetch(`${ALPACA_URL}/v2/orders/${orderId}`, {
+      headers: { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET },
+    });
+    if (!res.ok) return null;
+    const order = await res.json();
+    return order.filled_avg_price ? parseFloat(order.filled_avg_price) : null;
+  } catch { return null; }
+}
+
+// Lazy-load database to avoid circular deps
+let _db = null;
+function getDb() {
+  if (_db === null) {
+    try { _db = require('./database'); } catch { _db = false; }
+  }
+  return _db || null;
+}
+
 // ─── Ledger I/O ──────────────────────────────────────────────────────────────
 function loadLedger() {
+  // Try database first (primary source of truth)
+  try {
+    const db = getDb();
+    if (db) {
+      const dbTrades = db.getAllTrades();
+      if (dbTrades && dbTrades.length > 0) {
+        // Build knownClosedOrderIds from DB trades
+        const knownIds = dbTrades.map(t => t.orderId || t.order_id).filter(Boolean);
+        return { trades: dbTrades, knownClosedOrderIds: knownIds };
+      }
+    }
+  } catch (err) {
+    console.warn('[Postmortem] DB read failed, falling back to JSON:', err.message);
+  }
+
+  // Fallback to JSON
   if (fs.existsSync(LEDGER_FILE)) try { return JSON.parse(fs.readFileSync(LEDGER_FILE)); } catch {}
   return { trades: [], knownClosedOrderIds: [] };
 }
 
 function saveLedger(ledger) {
+  // Save to JSON (backup / transition)
   const dir = path.dirname(LEDGER_FILE);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(LEDGER_FILE, JSON.stringify(ledger, null, 2));
 }
 
 // ─── Find the buy order that opened a position ──────────────────────────────
-function findBuyDetails(symbol, tradeHistoryDir) {
+async function findBuyDetails(symbol, tradeHistoryDir) {
   try {
     const files = fs.readdirSync(tradeHistoryDir).filter(f => f.includes(`_${symbol}_buy_`) && f.endsWith('.json'));
     if (files.length === 0) return null;
     // Get the most recent buy
     files.sort().reverse();
-    const data = JSON.parse(fs.readFileSync(path.join(tradeHistoryDir, files[0])));
+    const filePath = path.join(tradeHistoryDir, files[0]);
+    const data = JSON.parse(fs.readFileSync(filePath));
+
+    let entryPrice = parseFloat(data.filled_avg_price || data.limit_price || 0);
+
+    // If entry price is 0/null (logged at submission before fill), fetch from Alpaca API
+    if (!entryPrice && data.id) {
+      console.log(`  [Postmortem] ${symbol}: entry price missing in log, fetching fill from Alpaca...`);
+      const filledPrice = await fetchFilledPrice(data.id);
+      if (filledPrice) {
+        entryPrice = filledPrice;
+        // Update the logged file so we don't need to fetch again
+        data.filled_avg_price = String(filledPrice);
+        try { fs.writeFileSync(filePath, JSON.stringify(data, null, 2)); } catch {}
+        console.log(`  [Postmortem] ${symbol}: resolved entry price = $${filledPrice}`);
+      } else {
+        console.warn(`  [Postmortem] ${symbol}: could not resolve entry price — skipping trade`);
+      }
+    }
+
     return {
-      entryPrice: parseFloat(data.filled_avg_price || data.limit_price || 0),
+      entryPrice,
       entryTime:  data.filled_at || data.submitted_at || data.created_at,
       qty:        parseInt(data.filled_qty || data.qty || 1),
       reason:     data.engine_reason || 'unknown',
@@ -93,11 +157,17 @@ async function processClosedTrades(closedOrders) {
     }
 
     // Find matching buy
-    const buy = findBuyDetails(symbol, tradeHistoryDir);
+    const buy = await findBuyDetails(symbol, tradeHistoryDir);
     const entryPrice = buy?.entryPrice || 0;
     const entryTime  = buy?.entryTime || null;
 
-    const pnlPct   = entryPrice ? ((exitPrice - entryPrice) / entryPrice * 100) : 0;
+    // Guard: skip trades with unresolved entry price to prevent corrupted P&L data
+    if (!entryPrice) {
+      console.warn(`  [Postmortem] SKIPPING ${symbol} — entry price is 0, would corrupt calibration data`);
+      continue;
+    }
+
+    const pnlPct   = ((exitPrice - entryPrice) / entryPrice * 100);
     const pnlDollar = (exitPrice - entryPrice) * exitQty;
     const isWin     = pnlPct > 0;
 
@@ -128,6 +198,16 @@ async function processClosedTrades(closedOrders) {
     ledger.knownClosedOrderIds.push(order.id);
     knownIds.add(order.id);
     newRecords++;
+
+    // Also persist to SQLite database
+    try {
+      const db = getDb();
+      if (db && !db.isOrderProcessed(order.id)) {
+        db.insertTrade(record);
+      }
+    } catch (err) {
+      console.warn(`  [Postmortem] SQLite write failed (JSON still saved): ${err.message}`);
+    }
 
     const winLoss = isWin ? '✓ WIN' : '✗ LOSS';
     console.log(`  [Postmortem] ${symbol}: ${winLoss} ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% ($${pnlDollar.toFixed(2)}) | Exit: ${exitReason} | Held: ${holdingHours || '?'}h | Sources: ${record.sources.join('+') || '?'}`);

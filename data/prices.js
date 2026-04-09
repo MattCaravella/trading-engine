@@ -84,4 +84,43 @@ async function getVIX() {
   } catch { return null; }
 }
 
-module.exports = { getBars, closes, volumes, sma, stddev, rsi, bollingerBands, correlation, returns, getVIX };
+function adx(bars, period = 14) {
+  if (bars.length < period * 2 + 1) return null;
+  const recent = bars.slice(-(period * 2 + 1));
+  let smoothPDM = 0, smoothNDM = 0, smoothTR = 0;
+
+  // Seed with first `period` bars
+  for (let i = 1; i <= period; i++) {
+    const high = recent[i].h, low = recent[i].l, prevClose = recent[i-1].c;
+    const prevHigh = recent[i-1].h, prevLow = recent[i-1].l;
+    const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+    const pdm = (high - prevHigh > prevLow - low && high - prevHigh > 0) ? high - prevHigh : 0;
+    const ndm = (prevLow - low > high - prevHigh && prevLow - low > 0) ? prevLow - low : 0;
+    smoothTR += tr; smoothPDM += pdm; smoothNDM += ndm;
+  }
+
+  const dxValues = [];
+  for (let i = period + 1; i < recent.length; i++) {
+    const high = recent[i].h, low = recent[i].l, prevClose = recent[i-1].c;
+    const prevHigh = recent[i-1].h, prevLow = recent[i-1].l;
+    const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+    const pdm = (high - prevHigh > prevLow - low && high - prevHigh > 0) ? high - prevHigh : 0;
+    const ndm = (prevLow - low > high - prevHigh && prevLow - low > 0) ? prevLow - low : 0;
+
+    smoothTR  = smoothTR  - (smoothTR  / period) + tr;
+    smoothPDM = smoothPDM - (smoothPDM / period) + pdm;
+    smoothNDM = smoothNDM - (smoothNDM / period) + ndm;
+
+    const pdi = (smoothPDM / smoothTR) * 100;
+    const ndi = (smoothNDM / smoothTR) * 100;
+    const dx  = Math.abs(pdi - ndi) / (pdi + ndi || 1) * 100;
+    dxValues.push(dx);
+  }
+
+  if (dxValues.length < period) return null;
+  // Smooth ADX: SMA of last `period` DX values
+  const adxSlice = dxValues.slice(-period);
+  return adxSlice.reduce((a, b) => a + b, 0) / period;
+}
+
+module.exports = { getBars, closes, volumes, sma, stddev, rsi, bollingerBands, correlation, returns, getVIX, adx };

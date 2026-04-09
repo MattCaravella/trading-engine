@@ -15,7 +15,7 @@ const SP500 = [
   // Financials
   'JPM','BAC','GS','MS','WFC','C','BLK','SCHW','AXP','V','MA','PYPL',
   'COF','DFS','SYF','ALLY','RF','USB','TFC','KEY','MTB','FITB','HBAN',
-  'CFG','ZION','CMA','PBCT','SIVB','SBNY','WAL','PACW','FRC','IBKR',
+  'CFG','ZION','CMA','WAL','IBKR',
   'ICE','CME','CBOE','NDAQ','MKTX','HOOD',
   // Healthcare
   'UNH','LLY','JNJ','ABBV','MRK','PFE','TMO','ABT','DHR','BMY',

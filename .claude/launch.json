@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Watchdog (Scheduler + Dashboard)",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["watchdog.js"],
+      "port": 3001
+    },
+    {
+      "name": "Dashboard only",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["dashboard.js"],
+      "port": 3001
+    },
+    {
+      "name": "Scheduler only",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scheduler.js"],
+      "port": null
+    }
+  ]
+}

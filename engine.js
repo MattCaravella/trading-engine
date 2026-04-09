@@ -18,25 +18,80 @@ const ALPACA_KEY    = process.env.ALPACA_API_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY;
 const ALPACA_URL    = process.env.ALPACA_BASE_URL;
 
-const MAX_POSITIONS  = 20;    // Allow up to 20 while old small positions rotate out
-const POSITION_PCT   = 0.08;  // 8% of equity per position (~$8k on $100k account)
-const MAX_EXPOSURE   = 0.96;  // Stop buying once 96% of equity is deployed
-const TRAIL_PERCENT  = 4;
-const HARD_STOP_PCT  = 6;     // slightly wider stop — room to breathe
+const MAX_POSITIONS  = 20;
+const POSITION_PCT   = 0.08;
+const MAX_EXPOSURE   = 0.96;
 const COOLDOWN_HOURS = 24;
-const BUY_THRESHOLD  = 65;    // down from 70 — more opportunities
-const PROFIT_TARGET  = 7;     // take profits at +7%
+const BUY_THRESHOLD  = 65;
+
+// ─── Strategy-specific exit templates ────────────────────────────────────────
+// Mean reversion needs wider stops and no fixed profit target (let trail handle it)
+// Trend-following needs moderate stops and room to run
+// Relative value uses tighter stops with a fixed profit target
+const EXIT_PROFILES = {
+  mean_reversion: { hardStop: 10, trail: 8, profitTarget: null,  label: 'mean-reversion' },  // downtrend, bollinger
+  trend:          { hardStop: 8,  trail: 6, profitTarget: null,  label: 'trend' },            // ma_crossover
+  relative_value: { hardStop: 6,  trail: 5, profitTarget: 10,    label: 'relative-value' },   // relative_value
+  default:        { hardStop: 8,  trail: 6, profitTarget: 12,    label: 'default' },           // insider, techsector, etc
+};
+
+const SOURCE_TO_PROFILE = {
+  downtrend: 'mean_reversion', bollinger: 'mean_reversion',
+  ma_crossover: 'trend',
+  relative_value: 'relative_value',
+};
+
+function getExitProfile(source) {
+  return EXIT_PROFILES[SOURCE_TO_PROFILE[source] || 'default'];
+}
+
+// Legacy constants kept as absolute maximums
+const TRAIL_PERCENT  = 8;     // max trailing stop (used for overnight placement)
+const HARD_STOP_PCT  = 10;    // absolute max hard stop
+const PROFIT_TARGET  = 12;    // absolute max profit target
 
 const STATE_FILE = path.join(__dirname, 'trade_history/engine_state.json');
 
+// Lazy-load database to avoid circular deps
+let _db = null;
+function getDb() {
+  if (_db === null) {
+    try { _db = require('./database'); } catch { _db = false; }
+  }
+  return _db || null;
+}
+
 function loadState() {
+  // Try database first (primary source of truth)
+  try {
+    const db = getDb();
+    if (db) {
+      const dbState = db.getEngineState();
+      if (dbState && Object.keys(dbState).length > 0) {
+        return { stoppedOut: dbState.stoppedOut || {}, ...dbState };
+      }
+    }
+  } catch (err) {
+    // Fall through to JSON
+  }
+
+  // Fallback to JSON
   if (fs.existsSync(STATE_FILE)) try { return JSON.parse(fs.readFileSync(STATE_FILE)); } catch {}
   return { stoppedOut:{} };
 }
 function saveState(s) {
+  // Save to JSON (backup / transition)
   const dir = path.dirname(STATE_FILE);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir,{recursive:true});
   fs.writeFileSync(STATE_FILE, JSON.stringify(s,null,2));
+
+  // Also persist to SQLite database
+  try {
+    const db = getDb();
+    if (db) db.saveEngineState(s);
+  } catch (err) {
+    // JSON already saved as backup
+  }
 }
 function isOnCooldown(ticker, state) {
   const ts = state.stoppedOut?.[ticker];
@@ -55,15 +110,72 @@ async function getAccount()       { return alpaca('GET','/account'); }
 async function getOpenPositions() { const p=await alpaca('GET','/positions'); return Array.isArray(p)?p:[]; }
 async function getOpenOrders()    { const o=await alpaca('GET','/orders?status=open'); return Array.isArray(o)?o:[]; }
 
+async function getVolatilityAdjustedSize(ticker, baseSize) {
+  const BASELINE_VOL = 0.25; // 25% — typical S&P 500 stock annualized vol
+  const MIN_SIZE = 0.02;     // 2% floor
+  const MAX_SIZE = 0.12;     // 12% ceiling
+  try {
+    const { getBars, closes, returns } = require('./data/prices');
+    const bars = await getBars(ticker, 60);
+    const cls  = closes(bars);
+    const rets = returns(cls);
+    // Use last 30 daily returns for realized vol
+    const recentRets = rets.slice(-30);
+    if (recentRets.length < 20) return baseSize; // not enough data, return base
+    const mean = recentRets.reduce((a, b) => a + b, 0) / recentRets.length;
+    const variance = recentRets.reduce((s, r) => s + (r - mean) ** 2, 0) / recentRets.length;
+    const dailyVol = Math.sqrt(variance);
+    const realizedVol = dailyVol * Math.sqrt(252); // annualize
+    // Scale inversely to volatility
+    const adjusted = baseSize * (BASELINE_VOL / Math.max(realizedVol, 0.01));
+    const clamped = Math.max(MIN_SIZE, Math.min(MAX_SIZE, adjusted));
+    console.log(`  [SIZE] ${ticker}: base=${(baseSize*100).toFixed(1)}%, vol-adjusted=${(clamped*100).toFixed(1)}%, vol=${(realizedVol*100).toFixed(1)}%`);
+    return clamped;
+  } catch (e) {
+    console.warn(`  [SIZE] ${ticker}: vol-adjust failed (${e.message}), using base=${(baseSize*100).toFixed(1)}%`);
+    return baseSize;
+  }
+}
+
+async function getATRStop(ticker, multiplier = 2.0) {
+  const MIN_STOP = 3;  // 3% minimum stop distance
+  const MAX_STOP = 10; // 10% maximum stop distance
+  try {
+    const { getBars } = require('./data/prices');
+    const bars = await getBars(ticker, 20);
+    if (bars.length < 14) return HARD_STOP_PCT; // fallback
+    // Calculate 14-day ATR
+    const atrBars = bars.slice(-14);
+    let atrSum = 0;
+    for (let i = 0; i < atrBars.length; i++) {
+      const high = atrBars[i].h;
+      const low  = atrBars[i].l;
+      const prevClose = i === 0 ? atrBars[i].o : atrBars[i - 1].c; // use open for first bar
+      const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+      atrSum += tr;
+    }
+    const atr = atrSum / atrBars.length;
+    const currentPrice = atrBars[atrBars.length - 1].c;
+    const stopPct = (atr * multiplier) / currentPrice * 100;
+    const clamped = Math.max(MIN_STOP, Math.min(MAX_STOP, stopPct));
+    return clamped;
+  } catch (e) {
+    console.warn(`  [STOP] ${ticker}: ATR calc failed (${e.message}), using hard stop=${HARD_STOP_PCT}%`);
+    return HARD_STOP_PCT;
+  }
+}
+
 async function calcQty(ticker, equity, riskMaxPct) {
   try {
     const { getBars, closes } = require('./data/prices');
     const bars  = await getBars(ticker, 5);
     const price = closes(bars).slice(-1)[0];
-    // Use Monte Carlo's suggested max pct, or default POSITION_PCT, whichever is smaller
-    const effectivePct = riskMaxPct ? Math.min(POSITION_PCT, riskMaxPct / 100) : POSITION_PCT;
+    // Get volatility-adjusted position size
+    const volAdjustedSize = await getVolatilityAdjustedSize(ticker, POSITION_PCT);
+    // Use the lesser of vol-adjusted size and Monte Carlo's suggested max pct
+    const effectivePct = riskMaxPct ? Math.min(volAdjustedSize, riskMaxPct / 100) : volAdjustedSize;
     const qty   = Math.floor((equity * effectivePct) / price);
-    if (effectivePct < POSITION_PCT) console.log(`  [SIZE] ${ticker}: Monte Carlo capped to ${(effectivePct*100).toFixed(1)}% (was ${(POSITION_PCT*100).toFixed(1)}%)`);
+    if (effectivePct < volAdjustedSize) console.log(`  [SIZE] ${ticker}: Monte Carlo capped to ${(effectivePct*100).toFixed(1)}% (was ${(volAdjustedSize*100).toFixed(1)}%)`);
     return Math.max(1, qty);
   } catch { return 1; }
 }
@@ -74,14 +186,45 @@ async function placeBuy(ticker, reason, equity, riskMaxPct) {
   if (!order.id) { console.error(`  [BUY FAILED] ${ticker}:`, JSON.stringify(order)); return null; }
   logTrade({...order, engine_reason:reason});
   console.log(`  [BUY]  ${ticker} x${qty} — ${reason}`);
+
+  // Poll for fill to capture filled_avg_price (market orders fill nearly instantly)
+  pollForFill(order.id, ticker, reason).catch(e => console.warn(`  [FILL POLL] ${ticker}: ${e.message}`));
+
   return order;
 }
 
-async function placeTrailingStop(ticker, qty, entryPrice) {
-  const order = await alpaca('POST','/orders',{ symbol:ticker, qty:String(qty), side:'sell', type:'trailing_stop', trail_percent:String(TRAIL_PERCENT), time_in_force:'gtc' });
+async function pollForFill(orderId, ticker, reason) {
+  const HISTORY_DIR = path.join(__dirname, 'trade_history');
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await new Promise(r => setTimeout(r, 2000)); // wait 2s between attempts
+    const filled = await alpaca('GET', `/orders/${orderId}`);
+    if (filled.filled_avg_price && parseFloat(filled.filled_avg_price) > 0) {
+      // Update the logged JSON file with fill data
+      const date = new Date(filled.submitted_at || Date.now()).toISOString().slice(0, 10);
+      const jsonFile = path.join(HISTORY_DIR, `${date}_${ticker}_buy_${orderId.slice(0,8)}.json`);
+      try {
+        if (fs.existsSync(jsonFile)) {
+          const data = JSON.parse(fs.readFileSync(jsonFile));
+          data.filled_avg_price = filled.filled_avg_price;
+          data.filled_qty = filled.filled_qty;
+          data.filled_at = filled.filled_at;
+          data.status = filled.status;
+          fs.writeFileSync(jsonFile, JSON.stringify(data, null, 2));
+          console.log(`  [FILL] ${ticker}: $${filled.filled_avg_price} x${filled.filled_qty} — logged`);
+        }
+      } catch {}
+      return;
+    }
+    if (filled.status === 'canceled' || filled.status === 'expired' || filled.status === 'rejected') return;
+  }
+}
+
+async function placeTrailingStop(ticker, qty, entryPrice, trailPct) {
+  const trail = trailPct || TRAIL_PERCENT;
+  const order = await alpaca('POST','/orders',{ symbol:ticker, qty:String(qty), side:'sell', type:'trailing_stop', trail_percent:String(trail), time_in_force:'gtc' });
   if (!order.id) { console.error(`  [TRAIL STOP FAILED] ${ticker}:`, JSON.stringify(order)); return null; }
-  logTrade({...order, engine_reason:`Trailing stop ${TRAIL_PERCENT}% from peak`});
-  console.log(`  [TRAIL STOP] ${ticker} — ${TRAIL_PERCENT}% trail placed`);
+  logTrade({...order, engine_reason:`Trailing stop ${trail}% from peak`});
+  console.log(`  [TRAIL STOP] ${ticker} — ${trail}% trail placed`);
   return order;
 }
 
@@ -105,11 +248,14 @@ async function detectStopOuts(state) {
 }
 
 async function placeOvernightTrailingStops() {
+  const state = loadState();
   const [positions, openOrders] = await Promise.all([getOpenPositions(),getOpenOrders()]);
   let placed=0;
   for (const pos of positions) {
     if (await hasTrailingStop(pos.symbol,openOrders)) continue;
-    await placeTrailingStop(pos.symbol, pos.qty, parseFloat(pos.avg_entry_price));
+    const source = state.positionSources?.[pos.symbol] || 'unknown';
+    const profile = getExitProfile(source);
+    await placeTrailingStop(pos.symbol, pos.qty, parseFloat(pos.avg_entry_price), profile.trail);
     placed++;
     await new Promise(r=>setTimeout(r,300));
   }
@@ -154,24 +300,35 @@ async function runTradeCycle(getCandidatesFn) {
       const ticker   = pos.symbol;
       const entry    = parseFloat(pos.avg_entry_price);
       const pnlPct   = parseFloat(pos.unrealized_plpc)*100;
-      console.log(`  ${ticker.padEnd(6)} entry=$${entry.toFixed(2)} P&L=${pnlPct.toFixed(2)}%`);
 
-      if (pnlPct >= PROFIT_TARGET) {
+      // Get strategy-specific exit profile
+      const source  = state.positionSources?.[ticker] || 'unknown';
+      const profile = getExitProfile(source);
+      console.log(`  ${ticker.padEnd(6)} entry=$${entry.toFixed(2)} P&L=${pnlPct.toFixed(2)}% [${profile.label}]`);
+
+      // Profit target — only if the profile has one (mean reversion and trend use trail instead)
+      if (profile.profitTarget && pnlPct >= profile.profitTarget) {
         const sell = await alpaca('POST','/orders',{symbol:ticker,qty:pos.qty,side:'sell',type:'market',time_in_force:'day'});
-        if (sell.id) { logTrade({...sell,engine_reason:`Profit target: +${pnlPct.toFixed(2)}%`}); console.log(`  [PROFIT TAKE] ${ticker} +${pnlPct.toFixed(2)}%`); }
+        if (sell.id) { logTrade({...sell,engine_reason:`Profit target (${profile.label}): +${pnlPct.toFixed(2)}%`}); console.log(`  [PROFIT TAKE] ${ticker} +${pnlPct.toFixed(2)}% (${profile.label} target=${profile.profitTarget}%)`); }
         continue;
       }
 
-      if (pnlPct <= -HARD_STOP_PCT) {
+      // Hard stop — strategy-specific, with ATR adjustment
+      const atrStop = await getATRStop(ticker);
+      const effectiveStop = Math.min(atrStop, profile.hardStop);
+      console.log(`  [STOP] ${ticker}: ATR=${atrStop.toFixed(1)}%, profile-max=${profile.hardStop}%, effective=${effectiveStop.toFixed(1)}%`);
+      if (pnlPct <= -effectiveStop) {
         const sell = await alpaca('POST','/orders',{symbol:ticker,qty:pos.qty,side:'sell',type:'market',time_in_force:'day'});
-        if (sell.id) { logTrade({...sell,engine_reason:`Hard stop: ${pnlPct.toFixed(2)}%`}); console.log(`  [HARD STOP] ${ticker}`); if(!state.stoppedOut)state.stoppedOut={}; state.stoppedOut[ticker]=now; }
+        if (sell.id) { logTrade({...sell,engine_reason:`Stop (${profile.label}, ATR=${atrStop.toFixed(1)}%): ${pnlPct.toFixed(2)}%`}); console.log(`  [HARD STOP] ${ticker} at ${effectiveStop.toFixed(1)}% (${profile.label})`); if(!state.stoppedOut)state.stoppedOut={}; state.stoppedOut[ticker]=now; }
+        // Clean up source tracking
+        if (state.positionSources) delete state.positionSources[ticker];
         continue;
       }
 
       const openedToday = new Date(pos.created_at||0).toDateString()===new Date().toDateString();
       if (!(await hasTrailingStop(ticker,openOrders))) {
         if (openedToday) console.log(`  [SKIP TRAIL] ${ticker} — opened today, will place tonight`);
-        else await placeTrailingStop(ticker, pos.qty, entry);
+        else await placeTrailingStop(ticker, pos.qty, entry, profile.trail);
       }
     }
 
@@ -198,7 +355,8 @@ async function runTradeCycle(getCandidatesFn) {
     const slots = MAX_POSITIONS - openTickers.size;
     if (slots <= 0) { console.log('[Engine] Max positions reached.'); saveState(state); tracker.logCycle(equity, positions.length); return; }
 
-    const pendingBuys = new Set(openOrders.filter(o=>o.side==='buy'&&o.status==='pending_new').map(o=>o.symbol));
+    const ACTIVE_BUY_STATES = new Set(['pending_new','new','accepted','partially_filled','pending_cancel','pending_replace','held','calculated']);
+    const pendingBuys = new Set(openOrders.filter(o=>o.side==='buy'&&ACTIVE_BUY_STATES.has(o.status)).map(o=>o.symbol));
     const toTrade = candidates.filter(c=>!openTickers.has(c.ticker)&&!pendingBuys.has(c.ticker)&&!isOnCooldown(c.ticker,state)).slice(0,slots);
     if (toTrade.length===0) console.log('[Engine] No new buy candidates this cycle.');
 
@@ -243,7 +401,7 @@ async function runTradeCycle(getCandidatesFn) {
         continue;
       }
 
-      const risk = await assessPositionRisk(c.ticker, equity);
+      const risk = await assessPositionRisk(c.ticker, equity, top?.source);
       console.log(`  [RISK] ${c.ticker}: ${risk.reason}`);
       if (!risk.safe) {
         console.log(`  [SKIP] ${c.ticker} — risk gate failed`);
@@ -260,11 +418,15 @@ async function runTradeCycle(getCandidatesFn) {
       if (order && order.id) {
         tracker.execute(c._lifecycleId, order.id);
         newTrades++;
+        // Track signal source for strategy-specific exits
+        if (!state.positionSources) state.positionSources = {};
+        state.positionSources[c.ticker] = top?.source || 'unknown';
+        const profile = getExitProfile(top?.source);
+        console.log(`  [EXIT PROFILE] ${c.ticker}: ${profile.label} (stop=${profile.hardStop}%, trail=${profile.trail}%, target=${profile.profitTarget||'none'})`);
       }
 
       boughtThisCycle.add(c.ticker);
       recordTradeExecuted();
-      console.log(`  [PENDING TRAIL] ${c.ticker} — trailing stop placed next cycle`);
     }
 
     // Lifecycle summary

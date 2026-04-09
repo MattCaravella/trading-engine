@@ -27,7 +27,7 @@ async function getSignals() {
       if (Math.abs(z) < 2.0) return;
       const score = Math.min(75, Math.round(Math.abs(z)*20));
       const [buy,sell] = z > 2 ? [B,A] : [A,B];
-      signals.push({ ticker:buy, direction:'bullish', score, reason:`Pairs ${A}/${B} z=${z.toFixed(2)} corr=${corr.toFixed(2)} — ${buy} undervalued vs pair`, source:'pairs_trading' });
+      signals.push({ ticker:buy, direction:'bullish', score, reason:`RelVal ${A}/${B} z=${z.toFixed(2)} corr=${corr.toFixed(2)} — ${buy} undervalued vs pair`, source:'relative_value' });
     } catch {}
   }));
   return signals;

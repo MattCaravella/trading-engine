@@ -76,12 +76,43 @@ function getSchedulerInfo() {
 
   const nextCycleMs  = lastCycleTime ? Math.max(0, lastCycleTime.getTime() + 5 * 60 * 1000 - Date.now()) : null;
   const schedulerAge = lastCycleTime ? Math.round((Date.now() - lastCycleTime.getTime()) / 1000) : null;
-  const isAlive      = schedulerAge !== null && schedulerAge < 360; // dead if no cycle in 6 min
 
   // Watchdog restarts
-  const wdLines    = readLastLines(WATCHDOG_LOG, 50);
+  const wdLines    = readLastLines(WATCHDOG_LOG, 200);
   const restarts   = wdLines.filter(l => l.includes('restart #') && !l.includes('restart #0')).length;
   const wdOnline   = wdLines.some(l => l.includes('Watchdog online'));
+
+  // Market hours check (ET)
+  const etNow  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const etMins = etNow.getHours() * 60 + etNow.getMinutes();
+  const etDay  = etNow.getDay();
+  const isMktHours = etDay >= 1 && etDay <= 5 && etMins >= 570 && etMins < 960;
+
+  // During market hours: require a trade cycle in last 10 min
+  // Outside market hours: scheduler is "sleeping" — check watchdog started it in last 24h
+  let isAlive, schedStatus;
+  if (isMktHours) {
+    isAlive    = schedulerAge !== null && schedulerAge < 600;
+    schedStatus = isAlive ? (schedulerAge + 's ago') : 'OFFLINE';
+  } else {
+    const cutoff24h  = Date.now() - 24 * 60 * 60 * 1000;
+    const wdStarted  = wdLines.some(l => {
+      if (!l.includes('Starting scheduler.js')) return false;
+      const m = l.match(/\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\]/);
+      return m && new Date(m[1]).getTime() > cutoff24h;
+    });
+    // Also accept any [Scheduler] log line in last 24h as proof of life
+    const recentLog  = lines.some(l => {
+      if (!l.includes('[Scheduler]') && !l.includes('Trading Scheduler')) return false;
+      const m = l.match(/(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/);
+      return m && new Date(m[1]).getTime() > cutoff24h;
+    });
+    isAlive     = wdStarted || recentLog;
+    const mktStatus = marketStatus();
+    schedStatus = isAlive
+      ? (mktStatus === 'OVERNIGHT' ? 'Sleeping — opens 9:30 AM' : mktStatus === 'PRE-MARKET' ? 'Pre-market' : 'After-hours')
+      : 'OFFLINE';
+  }
 
   // Signal counts from last cache refresh
   const slowMatch  = lines.slice().reverse().find(l => l.includes('[Cache] SLOW updated'));
@@ -102,7 +133,7 @@ function getSchedulerInfo() {
   ).slice(-40);
 
   return {
-    isAlive, lastCycleTime, nextCycleMs, schedulerAge,
+    isAlive, schedStatus, lastCycleTime, nextCycleMs, schedulerAge,
     restarts, wdOnline, slowSigs, fastSigs, fastRefreshTime,
     activityLines
   };
@@ -343,7 +374,10 @@ const HTML = `<!DOCTYPE html>
     <div id="market-badge" class="market-badge badge-closed">LOADING</div>
     <div class="et-time" id="et-time">-- : -- : -- ET</div>
   </div>
-  <div class="last-update" id="last-update">Connecting...</div>
+  <div style="display:flex;align-items:center;gap:12px;">
+    <button onclick="window.open('/news','_blank','width=1200,height=800')" style="padding:7px 18px;background:var(--accent);border:none;color:#fff;border-radius:5px;cursor:pointer;font-weight:bold;font-size:13px;letter-spacing:0.5px;transition:background 0.2s;" onmouseover="this.style.background='#448aff'" onmouseout="this.style.background='var(--accent)'">News</button>
+    <div class="last-update" id="last-update">Connecting...</div>
+  </div>
 </div>
 
 <!-- Index Ticker Bar -->
@@ -600,8 +634,7 @@ async function refresh() {
     setDot('dot-alpaca', data.equity > 0 ? 'green' : 'red');
     document.getElementById('status-alpaca').textContent = data.equity > 0 ? fmtDollar(data.equity) : 'Disconnected';
     setDot('dot-scheduler', data.scheduler.isAlive ? 'green' : 'red');
-    document.getElementById('status-scheduler').textContent = data.scheduler.isAlive
-      ? (data.scheduler.schedulerAge + 's ago') : 'OFFLINE';
+    document.getElementById('status-scheduler').textContent = data.scheduler.schedStatus || 'OFFLINE';
     setDot('dot-watchdog', data.scheduler.wdOnline ? (data.scheduler.restarts > 0 ? 'yellow' : 'green') : 'red');
     document.getElementById('status-watchdog').textContent = data.scheduler.wdOnline
       ? (data.scheduler.restarts > 0 ? data.scheduler.restarts + ' restart(s)' : 'Running') : 'Offline';
@@ -668,6 +701,299 @@ refresh();
 </body>
 </html>`;
 
+// ─── News Data Fetcher ──────────────────────────────────────────────────────
+async function getNewsData() {
+  try {
+    const { fetchAllNews } = require('./Scraper/scraper');
+    const { batchSummarize } = require('./Scraper/summarizer');
+    const { cacheStats } = require('./Scraper/cache');
+
+    const articles = await fetchAllNews();
+    const enriched = await batchSummarize(articles);
+    const stats = cacheStats();
+
+    // Build source counts
+    const sourceCounts = {};
+    for (const a of articles) sourceCounts[a.source] = (sourceCounts[a.source] || 0) + 1;
+
+    // Sentiment counts
+    const sentiment = { bullish: 0, bearish: 0, neutral: 0 };
+    const analyzed = enriched.filter(a => a.analysis);
+    for (const a of analyzed) sentiment[a.analysis.sentiment] = (sentiment[a.analysis.sentiment] || 0) + 1;
+
+    // Build article list for display
+    const displayArticles = analyzed.map(a => ({
+      title: a.title,
+      source: a.source,
+      url: a.url,
+      publishedAt: a.publishedAt,
+      tickers: [...new Set([...(a.tickers || []), ...(a.analysis?.tickers || [])])],
+      sentiment: a.analysis?.sentiment || 'neutral',
+      confidence: a.analysis?.confidence || 'low',
+      urgency: a.analysis?.urgency || 'low',
+      summary: a.analysis?.summary || a.title,
+      marketImpact: a.analysis?.marketImpact || '',
+      sectors: a.analysis?.sectors || [],
+    })).sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+
+    // Build signals
+    const { UNIVERSE } = require('./data/universe');
+    const UNIVERSE_SET = new Set(UNIVERSE);
+    const CONF = { high: 1.5, medium: 1.0, low: 0.5 };
+    const URG  = { high: 1.3, medium: 1.0, low: 0.8 };
+    const tickerData = {};
+    for (const a of analyzed) {
+      if (!a.analysis || a.analysis.sentiment === 'neutral') continue;
+      const allTickers = new Set([...(a.tickers || []), ...(a.analysis.tickers || [])]);
+      for (const t of allTickers) {
+        if (!UNIVERSE_SET.has(t)) continue;
+        if (!tickerData[t]) tickerData[t] = { bull: 0, bear: 0, confSum: 0, urgSum: 0, count: 0, sources: new Set(), topTitle: '' };
+        if (a.analysis.sentiment === 'bullish') tickerData[t].bull++;
+        else tickerData[t].bear++;
+        tickerData[t].confSum += CONF[a.analysis.confidence] || 1;
+        tickerData[t].urgSum += URG[a.analysis.urgency] || 1;
+        tickerData[t].count++;
+        tickerData[t].sources.add(a.source);
+        if (!tickerData[t].topTitle) tickerData[t].topTitle = a.analysis.summary || a.title;
+      }
+    }
+    const signals = [];
+    for (const [ticker, d] of Object.entries(tickerData)) {
+      if (d.count < 2) continue;
+      const base = d.bull * 15 - d.bear * 10;
+      const avgConf = d.confSum / d.count;
+      const avgUrg = d.urgSum / d.count;
+      const score = Math.min(80, Math.max(0, Math.round(base * avgConf * avgUrg)));
+      signals.push({ ticker, direction: d.bull >= d.bear ? 'bullish' : 'bearish', score, bull: d.bull, bear: d.bear, sources: [...d.sources], topTitle: d.topTitle });
+    }
+    signals.sort((a, b) => b.score - a.score);
+
+    return { articles: displayArticles, signals, sourceCounts, sentiment, totalArticles: articles.length, cache: stats, fetchedAt: new Date().toISOString() };
+  } catch (e) {
+    return { error: e.message, articles: [], signals: [], sourceCounts: {}, sentiment: { bullish: 0, bearish: 0, neutral: 0 }, totalArticles: 0 };
+  }
+}
+
+// ─── News Page HTML ─────────────────────────────────────────────────────────
+const NEWS_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>News Sentiment — Algo Trader</title>
+<style>
+  :root { --bg:#060b11; --panel:#0e1824; --border:#1e3050; --accent:#2979ff; --green:#00e676; --red:#ff5252; --yellow:#ffca28; --text:#ddeeff; --dim:#556b8a; --bright:#ffffff; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI','Courier New',monospace; font-size:13px; }
+  .top-bar { background:var(--panel); border-bottom:1px solid var(--border); padding:14px 24px; display:flex; align-items:center; justify-content:space-between; }
+  .top-bar h1 { font-size:16px; color:var(--bright); font-weight:700; }
+  .top-bar .info { color:var(--dim); font-size:12px; }
+  .btn { padding:6px 14px; border:none; border-radius:4px; cursor:pointer; font-size:12px; font-weight:bold; transition:opacity 0.2s; }
+  .btn:hover { opacity:0.85; }
+  .btn-accent { background:var(--accent); color:#fff; }
+  .btn-dim { background:rgba(255,255,255,0.08); color:var(--text); }
+
+  .stats-bar { display:flex; gap:12px; padding:12px 24px; flex-wrap:wrap; }
+  .stat-card { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:12px 18px; min-width:140px; }
+  .stat-card .label { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
+  .stat-card .value { font-size:22px; font-weight:bold; color:var(--bright); }
+  .stat-card .value.green { color:var(--green); }
+  .stat-card .value.red { color:var(--red); }
+  .stat-card .value.yellow { color:var(--yellow); }
+
+  .content { display:grid; grid-template-columns:1fr 340px; gap:16px; padding:16px 24px; height:calc(100vh - 160px); }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:6px; overflow:hidden; display:flex; flex-direction:column; }
+  .panel-header { padding:10px 16px; border-bottom:1px solid var(--border); font-weight:bold; font-size:13px; color:var(--bright); display:flex; justify-content:space-between; align-items:center; }
+  .panel-body { overflow-y:auto; flex:1; padding:0; }
+
+  /* Articles */
+  .article { padding:10px 16px; border-bottom:1px solid rgba(30,48,80,0.4); transition:background 0.15s; cursor:default; }
+  .article:hover { background:rgba(41,121,255,0.05); }
+  .article-header { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:4px; }
+  .article-title { font-size:13px; color:var(--bright); font-weight:600; line-height:1.3; flex:1; }
+  .article-title a { color:var(--bright); text-decoration:none; }
+  .article-title a:hover { color:var(--accent); text-decoration:underline; }
+  .article-meta { display:flex; gap:8px; align-items:center; margin-top:4px; flex-wrap:wrap; }
+  .badge { display:inline-block; padding:1px 7px; border-radius:3px; font-size:10px; font-weight:bold; text-transform:uppercase; letter-spacing:0.3px; }
+  .badge-bull { background:rgba(0,230,118,0.15); color:var(--green); border:1px solid rgba(0,230,118,0.3); }
+  .badge-bear { background:rgba(255,82,82,0.15); color:var(--red); border:1px solid rgba(255,82,82,0.3); }
+  .badge-neutral { background:rgba(255,255,255,0.06); color:var(--dim); border:1px solid rgba(255,255,255,0.1); }
+  .badge-conf { background:rgba(41,121,255,0.1); color:#6ea8ff; border:1px solid rgba(41,121,255,0.2); }
+  .badge-urg { background:rgba(255,202,40,0.1); color:var(--yellow); border:1px solid rgba(255,202,40,0.2); }
+  .badge-source { background:rgba(255,255,255,0.05); color:var(--dim); border:1px solid rgba(255,255,255,0.08); }
+  .badge-ticker { background:rgba(41,121,255,0.12); color:var(--accent); border:1px solid rgba(41,121,255,0.25); cursor:pointer; }
+  .article-impact { font-size:11px; color:var(--dim); margin-top:3px; font-style:italic; }
+  .article-time { font-size:11px; color:var(--dim); white-space:nowrap; }
+
+  /* Signals sidebar */
+  .signal-row { padding:10px 16px; border-bottom:1px solid rgba(30,48,80,0.4); }
+  .signal-ticker { font-size:15px; font-weight:bold; }
+  .signal-ticker.bull { color:var(--green); }
+  .signal-ticker.bear { color:var(--red); }
+  .signal-score { float:right; font-size:18px; font-weight:bold; color:var(--bright); }
+  .signal-detail { font-size:11px; color:var(--dim); margin-top:3px; }
+  .signal-bar { height:4px; border-radius:2px; margin-top:6px; background:rgba(255,255,255,0.06); }
+  .signal-bar-fill { height:100%; border-radius:2px; }
+
+  /* Filters */
+  .filters { padding:8px 16px; border-bottom:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .filter-btn { padding:3px 10px; border-radius:3px; border:1px solid var(--border); background:transparent; color:var(--dim); font-size:11px; cursor:pointer; transition:all 0.15s; }
+  .filter-btn:hover, .filter-btn.active { border-color:var(--accent); color:var(--accent); background:rgba(41,121,255,0.08); }
+
+  .loading { text-align:center; padding:60px 20px; color:var(--dim); }
+  .loading .spinner { display:inline-block; width:24px; height:24px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; margin-bottom:12px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .error { text-align:center; padding:40px; color:var(--red); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width:6px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+  ::-webkit-scrollbar-thumb:hover { background:#2a4a70; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <h1>News Sentiment Dashboard</h1>
+  <div style="display:flex;gap:10px;align-items:center;">
+    <span class="info" id="fetch-time">Loading...</span>
+    <button class="btn btn-accent" onclick="loadNews()">Refresh</button>
+  </div>
+</div>
+
+<div class="stats-bar" id="stats-bar">
+  <div class="stat-card"><div class="label">Total Articles</div><div class="value" id="stat-total">-</div></div>
+  <div class="stat-card"><div class="label">Bullish</div><div class="value green" id="stat-bull">-</div></div>
+  <div class="stat-card"><div class="label">Bearish</div><div class="value red" id="stat-bear">-</div></div>
+  <div class="stat-card"><div class="label">Neutral</div><div class="value" id="stat-neutral">-</div></div>
+  <div class="stat-card"><div class="label">Signals</div><div class="value yellow" id="stat-signals">-</div></div>
+  <div class="stat-card"><div class="label">Sources</div><div class="value" id="stat-sources" style="font-size:13px;">-</div></div>
+</div>
+
+<div class="content">
+  <div class="panel">
+    <div class="panel-header">
+      <span>Articles</span>
+      <span id="article-count" style="color:var(--dim);font-weight:normal;font-size:12px;"></span>
+    </div>
+    <div class="filters" id="filters">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn" data-filter="bullish">Bullish</button>
+      <button class="filter-btn" data-filter="bearish">Bearish</button>
+      <button class="filter-btn" data-filter="high-conf">High Confidence</button>
+      <button class="filter-btn" data-filter="urgent">Urgent</button>
+    </div>
+    <div class="panel-body" id="articles-list">
+      <div class="loading"><div class="spinner"></div><br>Fetching news...</div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">Trading Signals</div>
+    <div class="panel-body" id="signals-list">
+      <div class="loading"><div class="spinner"></div><br>Analyzing...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+let allArticles = [];
+let currentFilter = 'all';
+
+function timeAgo(dateStr) {
+  const ms = Date.now() - new Date(dateStr).getTime();
+  if (ms < 60000) return 'just now';
+  if (ms < 3600000) return Math.floor(ms/60000) + 'm ago';
+  if (ms < 86400000) return Math.floor(ms/3600000) + 'h ago';
+  return Math.floor(ms/86400000) + 'd ago';
+}
+
+function renderArticles(articles) {
+  const el = document.getElementById('articles-list');
+  if (!articles.length) { el.innerHTML = '<div class="loading" style="color:var(--dim)">No articles match filter</div>'; return; }
+  el.innerHTML = articles.map(a => {
+    const sentClass = a.sentiment === 'bullish' ? 'badge-bull' : a.sentiment === 'bearish' ? 'badge-bear' : 'badge-neutral';
+    const tickers = (a.tickers||[]).map(t => '<span class="badge badge-ticker">'+t+'</span>').join(' ');
+    return '<div class="article">'
+      + '<div class="article-header">'
+      + '<div class="article-title"><a href="'+a.url+'" target="_blank">'+a.title+'</a></div>'
+      + '<div class="article-time">'+timeAgo(a.publishedAt)+'</div>'
+      + '</div>'
+      + '<div class="article-meta">'
+      + '<span class="badge '+sentClass+'">'+a.sentiment+'</span>'
+      + '<span class="badge badge-conf">'+a.confidence+'</span>'
+      + (a.urgency==='high'?'<span class="badge badge-urg">URGENT</span>':'')
+      + '<span class="badge badge-source">'+a.source+'</span>'
+      + (a.sectors||[]).map(s=>'<span class="badge badge-source">'+s+'</span>').join('')
+      + ' '+tickers
+      + '</div>'
+      + (a.marketImpact?'<div class="article-impact">'+a.marketImpact+'</div>':'')
+      + '</div>';
+  }).join('');
+  document.getElementById('article-count').textContent = articles.length + ' shown';
+}
+
+function renderSignals(signals) {
+  const el = document.getElementById('signals-list');
+  if (!signals.length) { el.innerHTML = '<div class="loading" style="color:var(--dim)">No signals yet (need 2+ articles per ticker)</div>'; return; }
+  el.innerHTML = signals.map(s => {
+    const cls = s.direction === 'bullish' ? 'bull' : 'bear';
+    const color = s.direction === 'bullish' ? 'var(--green)' : 'var(--red)';
+    return '<div class="signal-row">'
+      + '<span class="signal-score">'+s.score+'</span>'
+      + '<div class="signal-ticker '+cls+'">'+s.ticker+' <span style="font-size:11px;font-weight:normal;color:var(--dim)">'+s.direction.toUpperCase()+'</span></div>'
+      + '<div class="signal-detail">'+s.bull+' bullish, '+s.bear+' bearish &mdash; '+s.sources.join(', ')+'</div>'
+      + '<div class="signal-detail" style="margin-top:2px;">'+s.topTitle+'</div>'
+      + '<div class="signal-bar"><div class="signal-bar-fill" style="width:'+s.score+'%;background:'+color+';"></div></div>'
+      + '</div>';
+  }).join('');
+}
+
+function applyFilter(filter) {
+  currentFilter = filter;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === filter));
+  let filtered = allArticles;
+  if (filter === 'bullish') filtered = allArticles.filter(a => a.sentiment === 'bullish');
+  else if (filter === 'bearish') filtered = allArticles.filter(a => a.sentiment === 'bearish');
+  else if (filter === 'high-conf') filtered = allArticles.filter(a => a.confidence === 'high');
+  else if (filter === 'urgent') filtered = allArticles.filter(a => a.urgency === 'high');
+  renderArticles(filtered);
+}
+
+document.getElementById('filters').addEventListener('click', e => {
+  if (e.target.classList.contains('filter-btn')) applyFilter(e.target.dataset.filter);
+});
+
+async function loadNews() {
+  document.getElementById('articles-list').innerHTML = '<div class="loading"><div class="spinner"></div><br>Fetching & analyzing news...</div>';
+  document.getElementById('signals-list').innerHTML = '<div class="loading"><div class="spinner"></div><br>Generating signals...</div>';
+  try {
+    const res = await fetch('/api/news');
+    const data = await res.json();
+    if (data.error) { document.getElementById('articles-list').innerHTML = '<div class="error">Error: '+data.error+'</div>'; return; }
+
+    allArticles = data.articles || [];
+    document.getElementById('stat-total').textContent = data.totalArticles || 0;
+    document.getElementById('stat-bull').textContent = data.sentiment?.bullish || 0;
+    document.getElementById('stat-bear').textContent = data.sentiment?.bearish || 0;
+    document.getElementById('stat-neutral').textContent = data.sentiment?.neutral || 0;
+    document.getElementById('stat-signals').textContent = (data.signals||[]).length;
+    const srcList = Object.entries(data.sourceCounts||{}).map(([k,v])=>k+': '+v).join(', ');
+    document.getElementById('stat-sources').textContent = srcList || '-';
+    document.getElementById('fetch-time').textContent = 'Updated: ' + new Date(data.fetchedAt).toLocaleTimeString();
+
+    applyFilter(currentFilter);
+    renderSignals(data.signals || []);
+  } catch(e) {
+    document.getElementById('articles-list').innerHTML = '<div class="error">Failed to load: '+e.message+'</div>';
+  }
+}
+
+loadNews();
+</script>
+</body>
+</html>`;
+
 // ─── Server ─────────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   if (req.url === '/') {
@@ -681,6 +1007,17 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
     }
+  } else if (req.url === '/api/news') {
+    try {
+      const data = await getNewsData();
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify(data));
+    } catch (e) {
+      res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
+    }
+  } else if (req.url === '/news') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(NEWS_HTML);
   } else {
     res.writeHead(404); res.end('Not found');
   }

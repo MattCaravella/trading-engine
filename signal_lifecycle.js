@@ -15,6 +15,15 @@ const path = require('path');
 const TRANSITIONS_FILE = path.join(__dirname, 'trade_history/signal_transitions.jsonl');
 const CYCLE_LOG_FILE   = path.join(__dirname, 'trade_history/cycle_log.jsonl');
 
+// Lazy-load database to avoid circular deps
+let _db = null;
+function getDb() {
+  if (_db === null) {
+    try { _db = require('./database'); } catch { _db = false; }
+  }
+  return _db || null;
+}
+
 // Valid transitions
 const VALID_TRANSITIONS = {
   GENERATED:  ['CONFIRMED', 'REJECTED_STALE', 'REJECTED_DUPLICATE', 'REJECTED_UNCONFIRMED'],
@@ -99,19 +108,28 @@ class SignalTracker {
     return this.transition(id, 'EXECUTED', `Order placed: ${orderId}`);
   }
 
-  // Log transition to JSONL file
+  // Log transition to JSONL file and SQLite
   _logTransition(sig, entry) {
-    const line = JSON.stringify({
+    const record = {
       signalId: sig.id,
       ticker: sig.ticker,
       source: sig.source,
       score: sig.score,
       ...entry,
-    });
+    };
+    const line = JSON.stringify(record);
+
+    // JSONL file (backup / transition)
     try {
       const dir = path.dirname(TRANSITIONS_FILE);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       fs.appendFileSync(TRANSITIONS_FILE, line + '\n');
+    } catch {}
+
+    // SQLite database
+    try {
+      const db = getDb();
+      if (db) db.insertSignalTransition(record);
     } catch {}
   }
 
@@ -131,20 +149,30 @@ class SignalTracker {
     };
   }
 
-  // Log full cycle to JSONL
+  // Log full cycle to JSONL and SQLite
   logCycle(equity, positionCount) {
     const summary = this.getCycleSummary();
-    const line = JSON.stringify({
+    const cycleRecord = {
       timestamp: new Date().toISOString(),
       equity,
       positions: positionCount,
       ...summary,
-    });
+    };
+    const line = JSON.stringify(cycleRecord);
+
+    // JSONL file (backup / transition)
     try {
       const dir = path.dirname(CYCLE_LOG_FILE);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       fs.appendFileSync(CYCLE_LOG_FILE, line + '\n');
     } catch {}
+
+    // SQLite database
+    try {
+      const db = getDb();
+      if (db) db.insertCycle(cycleRecord);
+    } catch {}
+
     return summary;
   }
 

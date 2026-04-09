@@ -28,13 +28,13 @@ const MAX_DRAWDOWN_PCT     = 8;       // 8% from peak → halt new buys
 const MAX_SECTOR_PCT       = 25;      // 25% max in any sector
 const MAX_DAILY_TRADES     = 10;      // Max new buys per day (increased for faster deployment)
 const MIN_DAILY_DOLLAR_VOL = 1000000; // Skip stocks with <$1M avg daily dollar volume
-const MAX_CORRELATED       = 6;       // Max positions with correlation > 0.70
-const CORR_THRESHOLD       = 0.85;    // Correlation threshold for "highly correlated" (temporarily raised from 0.70)
+const MAX_CORRELATED       = 8;       // Max positions with high correlation (loosened from 3→6→8)
+const CORR_THRESHOLD       = 0.75;    // Correlation threshold (lowered from 0.85 — allows sector-aligned thesis)
 const MIN_CORR_POSITION_VAL = 500;    // Only check correlation against positions worth > $500
 
 const STATE_FILE = path.join(__dirname, 'trade_history/governor_state.json');
 
-// ─── Sector mapping for the most common tickers ─────────────────────────────
+// ─── Sector mapping — covers full universe (SP500 + MIDCAP + SMALLCAP) ──────
 const SECTOR_MAP = {
   // Technology
   AAPL:'Tech',MSFT:'Tech',NVDA:'Tech',META:'Tech',GOOGL:'Tech',GOOG:'Tech',AMZN:'Tech',AVGO:'Tech',
@@ -44,52 +44,153 @@ const SECTOR_MAP = {
   MRVL:'Tech',SMCI:'Tech',WDAY:'Tech',DDOG:'Tech',HUBS:'Tech',TTD:'Tech',OKTA:'Tech',MDB:'Tech',
   TEAM:'Tech',AI:'Tech',PATH:'Tech',COIN:'Tech',ADI:'Tech',MCHP:'Tech',GTLB:'Tech',CFLT:'Tech',
   ESTC:'Tech',ZM:'Tech',DOCU:'Tech',TWLO:'Tech',BILL:'Tech',BOX:'Tech',SMAR:'Tech',
+  MNDY:'Tech',APPN:'Tech',NCNO:'Tech',RAMP:'Tech',COUP:'Tech',JAMF:'Tech',QLYS:'Tech',SPSC:'Tech',
+  QTWO:'Tech',EVTC:'Tech',NEWR:'Tech',PCTY:'Tech',PAYC:'Tech',CDAY:'Tech',
+  ATEN:'Tech',CEVA:'Tech',ALRM:'Tech',BAND:'Tech',RSKD:'Tech',TASK:'Tech',CINT:'Tech',ARLO:'Tech',
+  PCMI:'Tech',MITK:'Tech',DXC:'Tech',
   // Financials
   JPM:'Fin',BAC:'Fin',GS:'Fin',MS:'Fin',WFC:'Fin',C:'Fin',BLK:'Fin',SCHW:'Fin',AXP:'Fin',
   V:'Fin',MA:'Fin',PYPL:'Fin',COF:'Fin',DFS:'Fin',SYF:'Fin',ALLY:'Fin',USB:'Fin',TFC:'Fin',
   KEY:'Fin',MTB:'Fin',FITB:'Fin',HBAN:'Fin',CFG:'Fin',ICE:'Fin',CME:'Fin',CBOE:'Fin',
   HOOD:'Fin',SOFI:'Fin',UPST:'Fin',AFRM:'Fin',IBKR:'Fin',
+  RF:'Fin',ZION:'Fin',CMA:'Fin',WAL:'Fin',NDAQ:'Fin',MKTX:'Fin',
+  BOKF:'Fin',FFIN:'Fin',WSFS:'Fin',SNV:'Fin',PNFP:'Fin',CVBF:'Fin',IBOC:'Fin',SFNC:'Fin',
+  CATY:'Fin',FULT:'Fin',UMBF:'Fin',CBSH:'Fin',WTFC:'Fin',NBTB:'Fin',FBIZ:'Fin',
+  BANF:'Fin',BRKL:'Fin',HAFC:'Fin',FBMS:'Fin',IBCP:'Fin',FFBC:'Fin',UVSP:'Fin',CBTX:'Fin',
+  PFIS:'Fin',HONE:'Fin',ESSA:'Fin',SBCF:'Fin',FXNC:'Fin',SMBC:'Fin',
   // Healthcare
   UNH:'Health',LLY:'Health',JNJ:'Health',ABBV:'Health',MRK:'Health',PFE:'Health',TMO:'Health',
   ABT:'Health',DHR:'Health',BMY:'Health',AMGN:'Health',GILD:'Health',REGN:'Health',VRTX:'Health',
   MRNA:'Health',BNTX:'Health',CAH:'Health',MCK:'Health',CVS:'Health',CI:'Health',HUM:'Health',
   ELV:'Health',HCA:'Health',STE:'Health',BAX:'Health',BDX:'Health',MDT:'Health',SYK:'Health',BSX:'Health',
-  // Consumer
+  BIIB:'Health',MOH:'Health',CNC:'Health',UHS:'Health',HOLX:'Health',HOLOGIC:'Health',ZBH:'Health',
+  IQV:'Health',CRL:'Health',ILMN:'Health',WST:'Health',
+  PDCO:'Health',HSIC:'Health',PRGO:'Health',JAZZ:'Health',ACAD:'Health',EXEL:'Health',ITCI:'Health',
+  NTRA:'Health',PRVA:'Health',GKOS:'Health',MMSI:'Health',INVA:'Health',
+  AXSM:'Health',IMVT:'Health',PRAX:'Health',ARDX:'Health',VRNA:'Health',HALO:'Health',KNSA:'Health',
+  CLDX:'Health',ACRS:'Health',TARS:'Health',OMCL:'Health',LMAT:'Health',
+  // Consumer (Discretionary + Staples)
   HD:'Consumer',LOW:'Consumer',MCD:'Consumer',SBUX:'Consumer',NKE:'Consumer',TJX:'Consumer',
   ROST:'Consumer',TGT:'Consumer',WMT:'Consumer',COST:'Consumer',DG:'Consumer',DLTR:'Consumer',
   EBAY:'Consumer',ETSY:'Consumer',PG:'Consumer',KO:'Consumer',PEP:'Consumer',CL:'Consumer',
   EL:'Consumer',PM:'Consumer',MO:'Consumer',STZ:'Consumer',
-  // Auto / Industrial
-  F:'Auto',GM:'Auto',TSLA:'Auto',RIVN:'Auto',LCID:'Auto',
+  BURL:'Consumer',M:'Consumer',KSS:'Consumer',CHWY:'Consumer',W:'Consumer',
+  AZO:'Consumer',AAP:'Consumer',ORLY:'Consumer',GPC:'Consumer',LKQ:'Consumer',
+  AN:'Consumer',KMX:'Consumer',LAD:'Consumer',PAG:'Consumer',SAH:'Consumer',
+  LEA:'Consumer',BWA:'Consumer',
+  MDLZ:'Consumer',GIS:'Consumer',K:'Consumer',CPB:'Consumer',CAG:'Consumer',HRL:'Consumer',
+  MKC:'Consumer',CHD:'Consumer',SPB:'Consumer',CLX:'Consumer',
+  ULTA:'Consumer',COTY:'Consumer',REV:'Consumer',AVP:'Consumer',
+  BTI:'Consumer',LO:'Consumer',BUD:'Consumer',TAP:'Consumer',SAM:'Consumer',BREW:'Consumer',
+  BOOKING:'Consumer',EXPE:'Consumer',
+  BOOT:'Consumer',HIBB:'Consumer',CATO:'Consumer',ODP:'Consumer',BJ:'Consumer',PSMT:'Consumer',
+  PTLO:'Consumer',FRPT:'Consumer',CENTA:'Consumer',RICK:'Consumer',BOWL:'Consumer',PLAY:'Consumer',
+  DINE:'Consumer',CAKE:'Consumer',
+  // Auto
+  F:'Auto',GM:'Auto',TSLA:'Auto',RIVN:'Auto',LCID:'Auto',RACE:'Auto',HOG:'Auto',
+  // Industrials
   BA:'Indust',CAT:'Indust',GE:'Indust',MMM:'Indust',HON:'Indust',RTX:'Indust',LMT:'Indust',
   UPS:'Indust',FDX:'Indust',DAL:'Indust',UAL:'Indust',DE:'Indust',EMR:'Indust',
+  NOC:'Indust',GD:'Indust',L3H:'Indust',
+  AAL:'Indust',LUV:'Indust',JBLU:'Indust',ALK:'Indust',SAVE:'Indust',
+  ETN:'Indust',PH:'Indust',ROK:'Indust',AME:'Indust',FTV:'Indust',GNRC:'Indust',
+  XYL:'Indust',XYLEM:'Indust',
+  WM:'Indust',RSG:'Indust',CTAS:'Indust',FAST:'Indust',GWW:'Indust',MSC:'Indust',
+  TT:'Indust',IR:'Indust',CARR:'Indust',OTIS:'Indust',
+  SAIA:'Indust',WERN:'Indust',HUBG:'Indust',LSTR:'Indust',MATX:'Indust',RXO:'Indust',GXO:'Indust',
+  AOS:'Indust',NVT:'Indust',AIMC:'Indust',AAON:'Indust',TREX:'Indust',BECN:'Indust',IBP:'Indust',
+  MYRG:'Indust',STRL:'Indust',ROAD:'Indust',PRIM:'Indust',SHYF:'Indust',ZEUS:'Indust',
+  KFRC:'Indust',NVEE:'Indust',GTES:'Indust',FTDR:'Indust',
   // Energy
   XOM:'Energy',CVX:'Energy',COP:'Energy',EOG:'Energy',MPC:'Energy',VLO:'Energy',OXY:'Energy',
   DVN:'Energy',HAL:'Energy',SLB:'Energy',HES:'Energy',
+  PXD:'Energy',PSX:'Energy',BKR:'Energy',NOV:'Energy',FANG:'Energy',CLR:'Energy',APA:'Energy',
+  MRO:'Energy',CTRA:'Energy',
+  LNG:'Energy',CQP:'Energy',KMI:'Energy',WMB:'Energy',OKE:'Energy',ET:'Energy',EPD:'Energy',
+  PAA:'Energy',TRGP:'Energy',ENBL:'Energy',
+  SM:'Energy',CIVI:'Energy',MTDR:'Energy',RRC:'Energy',CRGY:'Energy',VTLE:'Energy',MGY:'Energy',
+  MNRL:'Energy',GPRE:'Energy',REX:'Energy',REPX:'Energy',TPVG:'Energy',
+  PLUG:'Energy',FCEL:'Energy',BLNK:'Energy',
   // Communications / Media
   NFLX:'Comms',DIS:'Comms',CMCSA:'Comms',T:'Comms',VZ:'Comms',TMUS:'Comms',SPOT:'Comms',
   SNAP:'Comms',PINS:'Comms',RDDT:'Comms',
-  // Real Estate / Utilities
+  CHTR:'Comms',DISH:'Comms',PARA:'Comms',FOX:'Comms',
+  MTCH:'Comms',IAC:'Comms',ZG:'Comms',TRIP:'Comms',
+  // Real Estate
   AMT:'REIT',PLD:'REIT',EQIX:'REIT',CCI:'REIT',SPG:'REIT',O:'REIT',
+  WELL:'REIT',DLR:'REIT',PSA:'REIT',EXR:'REIT',
+  NNN:'REIT',STAG:'REIT',IIPR:'REIT',COLD:'REIT',EPRT:'REIT',NTST:'REIT',GOOD:'REIT',
+  VNQ:'REIT',
+  ILPT:'REIT',GMRE:'REIT',BRSP:'REIT',APLE:'REIT',
+  // Utilities
   NEE:'Util',DUK:'Util',SO:'Util',AEP:'Util',XEL:'Util',
+  EXC:'Util',ED:'Util',PCG:'Util',SRE:'Util',WEC:'Util',
   // Materials
   LIN:'Materials',APD:'Materials',SHW:'Materials',NEM:'Materials',FCX:'Materials',NUE:'Materials',
+  ECL:'Materials',PPG:'Materials',AA:'Materials',CLF:'Materials',X:'Materials',
+  IOSP:'Materials',KWR:'Materials',TROX:'Materials',HWKN:'Materials',ASIX:'Materials',KOP:'Materials',
+  // Broad-market ETFs
+  SPY:'ETF',QQQ:'ETF',IWM:'ETF',DIA:'ETF',EEM:'ETF',EFA:'ETF',ARKK:'ETF',ARKG:'ETF',ARKW:'ETF',
+  // Sector ETFs (mapped to their sector)
+  XLK:'Tech',XLF:'Fin',XLE:'Energy',XLV:'Health',XLI:'Indust',XLP:'Consumer',XLU:'Util',
+  XLRE:'REIT',XLB:'Materials',XLC:'Comms',XLY:'Consumer',
+  // Commodity ETFs
+  GLD:'Commodity',SLV:'Commodity',USO:'Commodity',
+  // Bond ETFs
+  TLT:'Bond',IEF:'Bond',HYG:'Bond',
 };
 
 function getSector(ticker) {
   return SECTOR_MAP[ticker] || 'Other';
 }
 
+// Lazy-load database to avoid circular deps
+let _db = null;
+function getDb() {
+  if (_db === null) {
+    try { _db = require('./database'); } catch { _db = false; }
+  }
+  return _db || null;
+}
+
 // ─── State persistence ───────────────────────────────────────────────────────
 function loadState() {
+  // Try database first (primary source of truth)
+  try {
+    const db = getDb();
+    if (db) {
+      const dbState = db.getGovernorState();
+      if (dbState && Object.keys(dbState).length > 0) {
+        return {
+          peakEquity: dbState.peakEquity || 0,
+          dailyTrades: dbState.dailyTrades || {},
+          lastDay: dbState.lastDay || null,
+          ...dbState,
+        };
+      }
+    }
+  } catch (err) {
+    // Fall through to JSON
+  }
+
+  // Fallback to JSON
   if (fs.existsSync(STATE_FILE)) try { return JSON.parse(fs.readFileSync(STATE_FILE)); } catch {}
   return { peakEquity: 0, dailyTrades: {}, lastDay: null };
 }
 
 function saveState(s) {
+  // Save to JSON (backup / transition)
   const dir = path.dirname(STATE_FILE);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
+
+  // Also persist to SQLite database
+  try {
+    const db = getDb();
+    if (db) db.saveGovernorState(s);
+  } catch (err) {
+    // JSON already saved as backup
+  }
 }
 
 // ─── Alpaca helper ───────────────────────────────────────────────────────────
@@ -114,6 +215,9 @@ function checkDrawdown(equity, state) {
 }
 
 // ─── 2. Sector Concentration Check ──────────────────────────────────────────
+// Sectors exempt from concentration limits (diversified by nature)
+const EXEMPT_SECTORS = new Set(['ETF', 'Commodity', 'Bond']);
+
 function checkSectorConcentration(positions, equity, newTicker, newValue) {
   const sectorExposure = {};
   for (const pos of positions) {
@@ -123,6 +227,19 @@ function checkSectorConcentration(positions, equity, newTicker, newValue) {
   }
 
   const newSector = getSector(newTicker);
+
+  // ETFs, Commodity ETFs, and Bond ETFs are diversified — exempt from sector limits
+  if (EXEMPT_SECTORS.has(newSector)) {
+    const currentSectorVal = sectorExposure[newSector] || 0;
+    return {
+      blocked: false,
+      sector: newSector,
+      currentPct: ((currentSectorVal / equity) * 100).toFixed(1),
+      projectedPct: (((currentSectorVal + newValue) / equity) * 100).toFixed(1),
+      reason: null
+    };
+  }
+
   const currentSectorVal = sectorExposure[newSector] || 0;
   const projectedPct = ((currentSectorVal + newValue) / equity) * 100;
   const blocked = projectedPct > MAX_SECTOR_PCT;

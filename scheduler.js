@@ -1,7 +1,7 @@
 const fs   = require('fs');
 const path = require('path');
 const { isPreMarket, isMarketHours, isAfterHours, isWeekend, timeLabel, etTimeString, getETComponents } = require('./market_hours');
-const { refreshSlow, refreshFast, getCandidates, cacheStatus } = require('./signal_cache');
+const { refreshSlow, refreshFast, refreshNews, getCandidates, cacheStatus } = require('./signal_cache');
 const { runTradeCycle, placeOvernightTrailingStops }           = require('./engine');
 const { generateSummary }                                      = require('./daily_summary');
 const { generateForecast }                                     = require('./daily_forecast');
@@ -11,7 +11,7 @@ const FAST_REFRESH_MS  = 30 * 60 * 1000;
 const TRADE_EXEC_MS    = 5  * 60 * 1000;
 
 const state = {
-  preMarketDone: false, marketOpenDone: false, afterHoursDone: false,
+  preMarketDone: false, marketOpenDone: false, afterHoursDone: false, middayNewsDone: false,
   lastFastRefresh: 0, lastTradeExecution: 0, lastDay: -1,
 };
 
@@ -21,6 +21,7 @@ async function doPreMarket() {
   console.log(`[Scheduler] PRE-MARKET — ${etTimeString()} ET`);
   console.log('═'.repeat(60));
   await refreshSlow();
+  await refreshNews();  // Morning news scrape — catches overnight headlines
   state.preMarketDone = true;
 }
 
@@ -41,12 +42,28 @@ async function doFastRefresh() {
   state.lastFastRefresh = Date.now();
 }
 
+async function doMiddayNews() {
+  if (state.middayNewsDone) return;
+  const { mins } = getETComponents();
+  if (mins < 720) return;  // 720 = 12:00 PM ET
+  console.log(`\n[Scheduler] MIDDAY NEWS refresh — ${etTimeString()} ET`);
+  await refreshNews();  // Midday scrape — catches morning earnings, analyst calls, breaking news
+  state.middayNewsDone = true;
+}
+
+let executingTrade = false;
 async function doTradeExecution() {
+  if (executingTrade) { console.log('[Scheduler] Trade cycle still running, skipping'); return; }
   if (Date.now()-state.lastTradeExecution < TRADE_EXEC_MS) return;
-  const status = cacheStatus();
-  if (status.slow.count===0 && status.fast.count===0) { console.log('[Scheduler] No cached signals yet'); return; }
-  await runTradeCycle(getCandidates);
-  state.lastTradeExecution = Date.now();
+  executingTrade = true;
+  try {
+    const status = cacheStatus();
+    if (status.slow.count===0 && status.fast.count===0) { console.log('[Scheduler] No cached signals yet'); return; }
+    await runTradeCycle(getCandidates);
+    state.lastTradeExecution = Date.now();
+  } finally {
+    executingTrade = false;
+  }
 }
 
 async function doAfterHours() {
@@ -65,18 +82,25 @@ async function doAfterHours() {
 function resetDailyFlags() {
   const { day } = getETComponents();
   if (day !== state.lastDay) {
-    state.preMarketDone=false; state.marketOpenDone=false; state.afterHoursDone=false;
+    state.preMarketDone=false; state.marketOpenDone=false; state.afterHoursDone=false; state.middayNewsDone=false;
     state.lastDay=day;
     console.log(`[Scheduler] New trading day — flags reset`);
   }
 }
 
+let ticking = false;
 async function tick() {
-  resetDailyFlags();
-  if (isWeekend()) return;
-  if (isPreMarket())   { await doPreMarket(); return; }
-  if (isMarketHours()) { await doMarketOpen(); await doFastRefresh(); await doTradeExecution(); return; }
-  if (isAfterHours())  { await doAfterHours(); return; }
+  if (ticking) return;
+  ticking = true;
+  try {
+    resetDailyFlags();
+    if (isWeekend()) return;
+    if (isPreMarket())   { await doPreMarket(); return; }
+    if (isMarketHours()) { await doMarketOpen(); await doMiddayNews(); await doFastRefresh(); await doTradeExecution(); return; }
+    if (isAfterHours())  { await doAfterHours(); return; }
+  } finally {
+    ticking = false;
+  }
 }
 
 async function init() {
@@ -93,8 +117,9 @@ async function init() {
 console.log('╔══════════════════════════════════════════════════════════╗');
 console.log('║             Trading Scheduler — Starting Up              ║');
 console.log('║                                                          ║');
-console.log('║  8:00 AM ET   → Slow sources (congress/contracts/lobby) ║');
+console.log('║  8:00 AM ET   → Slow sources + news scrape               ║');
 console.log('║  9:30 AM ET   → Market open fast refresh                 ║');
+console.log('║  12:00 PM ET  → Midday news scrape                       ║');
 console.log('║  Every 5 min  → Trade execution (market hours only)      ║');
 console.log('║  Every 30 min → Fast refresh (bollinger/MA/pairs)        ║');
 console.log('║  4:00 PM ET   → After-hours: summary + forecast + stops  ║');

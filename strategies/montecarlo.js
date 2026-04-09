@@ -1,9 +1,20 @@
 const { getBars, closes, returns } = require('../data/prices');
 
-const SIMS    = 2000;
-const HORIZON = 30;
+const SIMS = 2000;
 
-async function simulateTicker(ticker, capital) {
+// Strategy-specific simulation horizons and tolerances
+const PROFILES = {
+  mean_reversion: { horizon: 10, ruinMax: 10, ddMax: 45, label: 'MC(reversion)' },
+  trend:          { horizon: 20, ruinMax: 5,  ddMax: 35, label: 'MC(trend)' },
+  default:        { horizon: 20, ruinMax: 7,  ddMax: 40, label: 'MC(default)' },
+};
+
+const SOURCE_TO_MC_PROFILE = {
+  downtrend: 'mean_reversion', bollinger: 'mean_reversion',
+  ma_crossover: 'trend',
+};
+
+async function simulateTicker(ticker, capital, horizon = 20) {
   const bars = await getBars(ticker, 252);
   const rets = returns(closes(bars));
   if (rets.length < 30) return null;
@@ -12,7 +23,7 @@ async function simulateTicker(ticker, capital) {
   const finals=[]; let ruinCount=0; const dds=[];
   for (let s=0;s<SIMS;s++) {
     let val=capital, peak=capital, maxDD=0;
-    for (let d=0;d<HORIZON;d++) {
+    for (let d=0;d<horizon;d++) {
       const u1=Math.random(),u2=Math.random();
       const z=Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2);
       val *= (1+mean+std*z);
@@ -32,16 +43,17 @@ async function simulateTicker(ticker, capital) {
   };
 }
 
-async function assessPositionRisk(ticker, portfolioValue) {
+async function assessPositionRisk(ticker, portfolioValue, signalSource) {
   try {
-    const r = await simulateTicker(ticker, portfolioValue*0.10);
+    const mcProfile = PROFILES[SOURCE_TO_MC_PROFILE[signalSource] || 'default'];
+    const r = await simulateTicker(ticker, portfolioValue*0.10, mcProfile.horizon);
     if (!r) return { safe:true, maxPct:10, reason:'Insufficient data' };
     const ruin=parseFloat(r.probRuin), dd=parseFloat(r.maxDrawdownP95), vol=parseFloat(r.annualizedVol);
-    if (ruin > 5)   return { safe:false, maxPct:0, reason:`Monte Carlo: ${ruin}% ruin probability — skip` };
-    if (dd > 30)    return { safe:false, maxPct:2, reason:`Monte Carlo: ${dd}% drawdown at 95th pct — skip` };
-    if (vol > 80)   return { safe:true,  maxPct:3, reason:`Monte Carlo: vol=${vol}% — size to 3%` };
-    if (vol > 50)   return { safe:true,  maxPct:5, reason:`Monte Carlo: vol=${vol}% — size to 5%` };
-    return { safe:true, maxPct:10, reason:`Monte Carlo: vol=${vol}%, maxDD=${dd}%, ruin=${ruin}% — ok` };
+    if (ruin > mcProfile.ruinMax) return { safe:false, maxPct:0, reason:`${mcProfile.label}: ${ruin}% ruin > ${mcProfile.ruinMax}% limit — skip` };
+    if (dd > mcProfile.ddMax)     return { safe:false, maxPct:2, reason:`${mcProfile.label}: ${dd}% drawdown > ${mcProfile.ddMax}% limit — skip` };
+    if (vol > 80)   return { safe:true,  maxPct:3, reason:`${mcProfile.label}: vol=${vol}% — size to 3%` };
+    if (vol > 50)   return { safe:true,  maxPct:5, reason:`${mcProfile.label}: vol=${vol}% — size to 5%` };
+    return { safe:true, maxPct:10, reason:`${mcProfile.label}: vol=${vol}%, maxDD=${dd}%, ruin=${ruin}% — ok` };
   } catch(e) { return { safe:true, maxPct:5, reason:`Monte Carlo error: ${e.message}` }; }
 }
 

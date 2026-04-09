@@ -42,7 +42,24 @@
       "Bash(powershell -Command 'Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }')",
       "Bash(node -e \"fetch\\('http://localhost:3001/api/status'\\).then\\(r=>r.json\\(\\)\\).then\\(d=>{ console.log\\('Dashboard OK'\\); console.log\\('SPY:',d.indices?.SPY?.price, d.indices?.SPY?.changePct+'%'\\); console.log\\('QQQ:',d.indices?.QQQ?.price, d.indices?.QQQ?.changePct+'%'\\); console.log\\('DIA:',d.indices?.DIA?.price, d.indices?.DIA?.changePct+'%'\\); }\\).catch\\(e=>console.log\\('FAIL:',e.message\\)\\)\")",
       "Bash(node -e ':*)",
-      "Bash(node -e \"fetch\\('http://localhost:3001/api/status'\\).then\\(r=>r.json\\(\\)\\).then\\(d=>{const i=d.indices;console.log\\('SPY:',i.SPY.price, i.SPY.changePct+'%'\\);console.log\\('QQQ:',i.QQQ.price, i.QQQ.changePct+'%'\\);console.log\\('DIA:',i.DIA.price, i.DIA.changePct+'%'\\);}\\).catch\\(e=>console.log\\('FAIL:',e.message\\)\\)\")"
+      "Bash(node -e \"fetch\\('http://localhost:3001/api/status'\\).then\\(r=>r.json\\(\\)\\).then\\(d=>{const i=d.indices;console.log\\('SPY:',i.SPY.price, i.SPY.changePct+'%'\\);console.log\\('QQQ:',i.QQQ.price, i.QQQ.changePct+'%'\\);console.log\\('DIA:',i.DIA.price, i.DIA.changePct+'%'\\);}\\).catch\\(e=>console.log\\('FAIL:',e.message\\)\\)\")",
+      "Bash(node -e \"const d=JSON.parse\\(require\\('fs'\\).readFileSync\\('/dev/stdin','utf8'\\) || '{}'\\); console.log\\(JSON.stringify\\(d,null,2\\)\\)\")",
+      "Bash(tasklist /FI \"IMAGENAME eq node.exe\")",
+      "Bash(tasklist)",
+      "Bash(powershell -Command \"Get-Process -Id 6556 -ErrorAction SilentlyContinue | Select-Object Id,StartTime,CPU\")",
+      "Bash(powershell -Command \"Get-Process node | Select-Object Id,WorkingSet,StartTime | Sort-Object WorkingSet -Descending | Format-Table\")",
+      "Bash(powershell -Command \"Test-NetConnection -ComputerName localhost -Port 3001 -InformationLevel Quiet\")",
+      "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue | Select-Object LocalPort,OwningProcess\")",
+      "Bash(curl -s http://localhost:3001)",
+      "Bash(powershell -Command \"Stop-Process -Id 33324 -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue | Select-Object LocalPort,OwningProcess\")",
+      "Bash(powershell -Command \"Stop-Process -Id 33324 -Force\")",
+      "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue\")",
+      "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 3001 -State Listen | Select-Object OwningProcess\")",
+      "Bash(powershell -Command \"Stop-Process -Id 31452 -Force\")",
+      "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue | Select-Object OwningProcess\")",
+      "Bash(powershell -Command \"Stop-Process -Id 29156 -Force\")",
+      "Bash(powershell -File /tmp/list_node.ps1)",
+      "Bash(powershell -File \"C:\\\\Users\\\\Matth\\\\Desktop\\\\Trading\\\\cleanup_procs.ps1\")"
     ]
   }
 }

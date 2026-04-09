@@ -1,0 +1,29 @@
+{
+  "name": "trading-app",
+  "version": "1.0.0",
+  "description": "Alpaca paper trading system",
+  "scripts": {
+    "test": "jest --verbose"
+  },
+  "main": "daily_forecast.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MattCaravella/trading-engine.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/MattCaravella/trading-engine/issues"
+  },
+  "homepage": "https://github.com/MattCaravella/trading-engine#readme",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.86.1",
+    "better-sqlite3": "^12.8.0",
+    "rss-parser": "^3.13.0"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0"
+  }
+}

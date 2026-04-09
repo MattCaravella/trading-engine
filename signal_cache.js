@@ -6,14 +6,16 @@ const trending      = require('./monitors/trending');
 const techsector    = require('./monitors/techsector');
 const bollinger     = require('./strategies/bollinger');
 const ma_crossover  = require('./strategies/ma_crossover');
-const pairs_trading = require('./strategies/pairs_trading');
+const relative_value = require('./strategies/pairs_trading');
 const insider_buying= require('./strategies/insider_buying');
 const downtrend     = require('./strategies/downtrend');
 const offexchange   = require('./monitors/offexchange');
+const news_sentiment = require('./monitors/news_sentiment');
 const { aggregateByTicker } = require('./signals');
 
 const SLOW_SOURCES = { congress, govcontracts, lobbying, insider_buying, downtrend, techsector };
-const FAST_SOURCES = { bollinger, ma_crossover, pairs_trading, trending, flights };
+const FAST_SOURCES = { bollinger, ma_crossover, relative_value, trending, flights };
+const NEWS_SOURCES = { news_sentiment };  // Separate schedule: 8 AM + 12 PM (actionable hours only)
 
 // Signal staleness limits (milliseconds)
 const SLOW_MAX_AGE = 24 * 60 * 60 * 1000;  // 24 hours for alt-data
@@ -22,6 +24,7 @@ const API_FAILURE_THRESHOLD = 0.15;          // 15% failure rate → system kill
 
 let slowCache = { signals:[], updatedAt:null };
 let fastCache = { signals:[], updatedAt:null };
+let newsCache = { signals:[], updatedAt:null };
 let healthStatus = { slowFails: 0, slowTotal: 0, fastFails: 0, fastTotal: 0, degraded: false };
 
 async function refreshSlow() {
@@ -66,6 +69,24 @@ async function refreshFast() {
   console.log(`[Cache] FAST updated — ${signals.length} signals${fails > 0 ? ` (${fails}/${total} sources failed)` : ''}`);
 }
 
+async function refreshNews() {
+  console.log('\n[Cache] Refreshing NEWS sources...');
+  const signals = [];
+  const ts = Date.now();
+  let fails = 0;
+  const total = Object.keys(NEWS_SOURCES).length;
+  await Promise.allSettled(Object.entries(NEWS_SOURCES).map(async ([name,mod]) => {
+    try {
+      const s = await mod.getSignals();
+      for (const sig of s) signals.push({ ...sig, source: name, _generatedAt: ts });
+      console.log(`  [${name}] ${s.length} signal(s)`);
+    }
+    catch(e) { fails++; console.warn(`  [${name}] failed: ${e.message}`); }
+  }));
+  newsCache = { signals, updatedAt: new Date() };
+  console.log(`[Cache] NEWS updated — ${signals.length} signals${fails > 0 ? ` (${fails}/${total} sources failed)` : ''}`);
+}
+
 async function getCandidates() {
   const now = Date.now();
 
@@ -79,7 +100,8 @@ async function getCandidates() {
     console.log(`  [Cache] Dropped ${staleSlowCount} stale slow + ${staleFastCount} stale fast signals`);
   }
 
-  const all = [...freshSlow, ...freshFast];
+  const freshNews = newsCache.signals.filter(s => !s._generatedAt || (now - s._generatedAt) < SLOW_MAX_AGE);
+  const all = [...freshSlow, ...freshFast, ...freshNews];
   if (all.length === 0) return [];
   const top25 = aggregateByTicker(all).slice(0, 25).map(t => t.ticker);
   try { const oe = await offexchange.getSignals(top25); for (const s of oe) all.push({ ...s, source: 'offexchange', _generatedAt: now }); } catch {}
@@ -124,4 +146,4 @@ function getHealthStatus() {
   };
 }
 
-module.exports = { refreshSlow, refreshFast, getCandidates, cacheStatus, isSystemHealthy, getHealthStatus };
+module.exports = { refreshSlow, refreshFast, refreshNews, getCandidates, cacheStatus, isSystemHealthy, getHealthStatus };

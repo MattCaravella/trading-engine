@@ -26,12 +26,21 @@ const CALIBRATION_FILE = path.join(__dirname, 'trade_history/calibration.json');
 const LEDGER_FILE      = path.join(__dirname, 'trade_history/performance_ledger.json');
 const SUMMARY_FILE     = path.join(__dirname, 'trade_history/performance_summary.json');
 
+// Lazy-load database to avoid circular deps
+let _db = null;
+function getDb() {
+  if (_db === null) {
+    try { _db = require('./database'); } catch { _db = false; }
+  }
+  return _db || null;
+}
+
 // ─── Default weights (baseline) ─────────────────────────────────────────────
 const BASE_WEIGHTS = {
   insider_buying: 1.4, ma_crossover: 1.2, downtrend: 1.1, bollinger: 1.1,
-  pairs_trading: 1.0, techsector: 0.9,
+  relative_value: 1.0, techsector: 0.9,
   congress: 1.5, offexchange: 1.3, govcontracts: 1.0, lobbying: 0.8,
-  flights: 0.7, trending: 0.6,
+  flights: 0.7, trending: 0.6, news_sentiment: 1.2,
 };
 
 // Kill thresholds
@@ -51,9 +60,24 @@ function loadCalibration() {
 }
 
 function saveCalibration(cal) {
+  // Save to JSON (backup / transition)
   const dir = path.dirname(CALIBRATION_FILE);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(CALIBRATION_FILE, JSON.stringify(cal, null, 2));
+
+  // Also persist to SQLite database
+  try {
+    const db = getDb();
+    if (db) {
+      db.insertCalibration({
+        adjustedWeights: cal.adjustedWeights,
+        killedStrategies: cal.killedStrategies,
+        sourceStats: cal.sourceStats || null,
+      });
+    }
+  } catch (err) {
+    // JSON already saved as backup
+  }
 }
 
 function loadLedger() {
@@ -66,17 +90,18 @@ function loadSummary() {
   return null;
 }
 
-// ─── 1. Recalculate adaptive weights ────────────────────────────────────────
+// ─── 1. Recalculate adaptive weights using utility-based (Sharpe) weighting ──
 function recalculateWeights(trades) {
   const sourceStats = {};
 
   for (const t of trades) {
     for (const src of (t.sources || [])) {
-      if (!sourceStats[src]) sourceStats[src] = { wins: 0, losses: 0, totalPnlPct: 0, trades: 0 };
+      if (!sourceStats[src]) sourceStats[src] = { wins: 0, losses: 0, totalPnlPct: 0, trades: 0, pnls: [] };
       sourceStats[src].trades++;
       if (t.isWin) sourceStats[src].wins++;
       else sourceStats[src].losses++;
       sourceStats[src].totalPnlPct += t.pnlPct;
+      sourceStats[src].pnls.push(t.pnlPct);
     }
   }
 
@@ -89,16 +114,32 @@ function recalculateWeights(trades) {
     const winRate = stats.wins / stats.trades;
     const avgPnl  = stats.totalPnlPct / stats.trades;
 
-    // Weight multiplier based on performance
-    // Win rate 50% = no change (1.0x)
-    // Win rate 70% = 1.3x boost
-    // Win rate 30% = 0.7x penalty
-    // P&L factor: avg +2% = small boost, avg -2% = small penalty
-    const wrFactor  = 0.4 + winRate * 1.2;                    // 0.4 to 1.6
-    const pnlFactor = Math.max(0.5, Math.min(1.5, 1 + avgPnl / 10)); // 0.5 to 1.5
+    // Compute per-source Sharpe ratio (trade-level, annualized)
+    // Sharpe = mean(returns) / stddev(returns) * sqrt(trades_per_year)
+    const pnls = stats.pnls;
+    const mean = avgPnl;
+    const variance = pnls.reduce((s, p) => s + (p - mean) ** 2, 0) / pnls.length;
+    const std = Math.sqrt(variance) || 0.01; // prevent div by 0
+    const tradeSharpe = mean / std; // per-trade Sharpe (not annualized — we want relative ranking)
 
-    const multiplier = Math.max(0.3, Math.min(2.0, wrFactor * pnlFactor));
+    // Utility-based multiplier: combine Sharpe + win rate + profit factor
+    // Sharpe-based: positive Sharpe = boost, negative = penalty
+    // Range: Sharpe of -2 to +2 maps to multiplier 0.3 to 2.0
+    const sharpeMultiplier = Math.max(0.3, Math.min(2.0, 1.0 + tradeSharpe * 0.5));
+
+    // Profit factor bonus: gross wins / gross losses
+    const grossWins = pnls.filter(p => p > 0).reduce((s, p) => s + p, 0);
+    const grossLosses = Math.abs(pnls.filter(p => p < 0).reduce((s, p) => s + p, 0)) || 0.01;
+    const profitFactor = grossWins / grossLosses;
+    const pfBonus = profitFactor > 1.5 ? 0.2 : profitFactor > 1.0 ? 0.1 : 0;
+
+    const multiplier = Math.max(0.3, Math.min(2.0, sharpeMultiplier + pfBonus));
     adjusted[src] = Math.round(BASE_WEIGHTS[src] * multiplier * 100) / 100;
+
+    // Store enhanced stats for reporting
+    stats.sharpe = Math.round(tradeSharpe * 100) / 100;
+    stats.profitFactor = Math.round(profitFactor * 100) / 100;
+    stats.winRate = Math.round(winRate * 100);
   }
 
   return { adjusted, sourceStats };

@@ -5,6 +5,15 @@ const HISTORY_DIR = path.join(__dirname, 'trade_history');
 const CSV_FILE = path.join(HISTORY_DIR, 'trade_history.csv');
 const CSV_HEADER = 'date,time,id,symbol,side,qty,type,time_in_force,status,submitted_at\n';
 
+// Lazy-load database to avoid circular deps
+let _db = null;
+function getDb() {
+  if (_db === null) {
+    try { _db = require('./database'); } catch { _db = false; }
+  }
+  return _db || null;
+}
+
 function ensureDir() {
   if (!fs.existsSync(HISTORY_DIR)) fs.mkdirSync(HISTORY_DIR, { recursive: true });
   if (!fs.existsSync(CSV_FILE)) fs.writeFileSync(CSV_FILE, CSV_HEADER);
@@ -26,6 +35,15 @@ function logTrade(order) {
 
   const jsonFile = path.join(HISTORY_DIR, `${date}_${order.symbol}_${order.side}_${(order.id||'').slice(0,8)}.json`);
   fs.writeFileSync(jsonFile, JSON.stringify(order, null, 2));
+
+  // Also persist to SQLite database
+  try {
+    const db = getDb();
+    if (db) db.insertOrder(order);
+  } catch (err) {
+    console.warn(`  [Logger] SQLite write failed (CSV/JSON still saved): ${err.message}`);
+  }
+
   console.log(`  Logged to trade_history/`);
 }
 

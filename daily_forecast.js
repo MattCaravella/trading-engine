@@ -9,7 +9,8 @@ fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
 const ALPACA_KEY    = process.env.ALPACA_API_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY;
 const ALPACA_URL    = process.env.ALPACA_BASE_URL;
-const SUMMARIES_DIR = 'C:\\Users\\Matth\\OneDrive\\TradingSummaries';
+const SUMMARIES_DIR       = 'C:\\Users\\Matth\\OneDrive\\TradingSummaries';
+const SUMMARIES_DIR_LOCAL = path.join(__dirname, 'trade_history', 'summaries');
 
 const { getBars, closes, volumes, sma, rsi, bollingerBands, getVIX } = require('./data/prices');
 const { generateLessonsReport } = require('./strategy_calibrator');
@@ -296,6 +297,11 @@ async function generateForecast() {
   const file = path.join(SUMMARIES_DIR, `forecast_${tomorrow}.txt`);
   fs.writeFileSync(file, report);
   console.log(`[Forecast] Saved → ${file}`);
+  // Also save locally
+  if (!fs.existsSync(SUMMARIES_DIR_LOCAL)) fs.mkdirSync(SUMMARIES_DIR_LOCAL, { recursive: true });
+  const fileLocal = path.join(SUMMARIES_DIR_LOCAL, `forecast_${tomorrow}.txt`);
+  fs.writeFileSync(fileLocal, report);
+  console.log(`[Forecast] Saved → ${fileLocal}`);
 
   return report;
 }

@@ -1,5 +1,7 @@
-const { getBars, closes, rsi, sma } = require('../data/prices');
+const { getBars, closes, rsi, sma, adx } = require('../data/prices');
 const { UNIVERSE } = require('../data/universe');
+
+const ADX_MAX = 30; // Allow slightly higher ADX than bollinger — downtrend reversals can happen in moderate trends
 
 function countDowntrendDays(cls) {
   let count = 0;
@@ -34,6 +36,11 @@ async function getSignals() {
       const bars = await getBars(ticker,100);
       const cls  = closes(bars);
       if (cls.length < 50) return;
+
+      // ADX regime filter — skip extreme trends where reversals fail
+      const adxVal = adx(bars, 14);
+      if (adxVal !== null && adxVal > ADX_MAX) return;
+
       const rsiVal = rsi(cls,14);
       if (rsiVal===null||rsiVal>35) return;
       const days = countDowntrendDays(cls);
@@ -41,7 +48,9 @@ async function getSignals() {
       const div  = hasBullishDivergence(cls);
       let score  = Math.min(50,20+days);
       if (div) score = Math.min(80,score+25);
-      signals.push({ ticker, direction:'bullish', score, reason:`Downtrend reversal: ${days}d downtrend, RSI=${rsiVal.toFixed(0)}${div?', RSI divergence':''}`, source:'downtrend' });
+      // ADX bonus: lower ADX = better mean-reversion environment
+      if (adxVal !== null && adxVal < 20) score = Math.min(90, score + 10);
+      signals.push({ ticker, direction:'bullish', score, reason:`Downtrend reversal: ${days}d downtrend, RSI=${rsiVal.toFixed(0)}${div?', RSI divergence':''}, ADX=${adxVal?.toFixed(0)||'?'}`, source:'downtrend' });
     } catch {}
   }));
   return signals;

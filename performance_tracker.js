@@ -11,7 +11,30 @@ const path = require('path');
 
 const EQUITY_FILE = path.join(__dirname, 'trade_history/equity_curve.json');
 
+// Lazy-load database to avoid circular deps
+let _db = null;
+function getDb() {
+  if (_db === null) {
+    try { _db = require('./database'); } catch { _db = false; }
+  }
+  return _db || null;
+}
+
 function loadEquityCurve() {
+  // Try database first (primary source of truth)
+  try {
+    const db = getDb();
+    if (db) {
+      const dbSnapshots = db.getEquityCurve();
+      if (dbSnapshots && dbSnapshots.length > 0) {
+        return { snapshots: dbSnapshots };
+      }
+    }
+  } catch (err) {
+    // Fall through to JSON
+  }
+
+  // Fallback to JSON
   if (fs.existsSync(EQUITY_FILE)) try { return JSON.parse(fs.readFileSync(EQUITY_FILE)); } catch {}
   return { snapshots: [] };
 }
@@ -35,6 +58,15 @@ function recordDailySnapshot(equity, positionCount, dayBuys, daySells) {
   }
 
   saveEquityCurve(data);
+
+  // Also persist to SQLite database
+  try {
+    const db = getDb();
+    if (db) db.upsertEquitySnapshot({ date: today, equity, positions: positionCount, buys: dayBuys, sells: daySells });
+  } catch (err) {
+    // JSON already saved as backup
+  }
+
   return data;
 }
 
