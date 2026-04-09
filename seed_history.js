@@ -49,12 +49,15 @@ const RESUME     = args.includes('--resume');
 const SMALL_UNI  = args.find(a => a.startsWith('--universe='))?.split('=')[1] === 'top50';
 
 // ── Config (matches live engine EXIT_PROFILES) ──────────────
+// ATR-based stops replace fixed %. atrMult * 14-day ATR = stop distance.
 const EXIT_PROFILES = {
-  mean_reversion: { hardStop: 0.10, trail: 0.08, profitTarget: null  },
-  trend:          { hardStop: 0.08, trail: 0.06, profitTarget: null  },
-  relative_value: { hardStop: 0.06, trail: 0.05, profitTarget: 0.10 },
-  default:        { hardStop: 0.08, trail: 0.06, profitTarget: 0.12 },
+  mean_reversion: { atrMult: 2.0, trail: 0.08, profitTarget: null, maxHoldDays: 15 },
+  trend:          { atrMult: 1.5, trail: 0.06, profitTarget: null, maxHoldDays: 26 },
+  relative_value: { atrMult: 1.5, trail: 0.05, profitTarget: 0.10, maxHoldDays: 18 },
+  default:        { atrMult: 1.5, trail: 0.06, profitTarget: 0.12, maxHoldDays: 18 },
 };
+const MAX_HARD_STOP_PCT = 0.12;  // 12% absolute max
+const BREAKEVEN_TRIGGER_PCT = 0.03; // Move stop to breakeven after +3%
 const SOURCE_TO_PROFILE = {
   downtrend: 'mean_reversion', bollinger: 'mean_reversion',
   ma_crossover: 'trend', relative_value: 'relative_value',
@@ -459,11 +462,29 @@ function pairsSignal(barsA, barsB, symbolB, i) {
 function simulateTrade(bars, entryIdx, entryPrice, source) {
   const profile = getExitProfile(source);
   let highWaterMark = entryPrice;
+  let peakPnlPct    = 0;
   let exitPrice     = null;
   let exitReason    = 'time_stop';
   let exitIdx       = entryIdx;
 
-  const maxIdx = Math.min(entryIdx + MAX_HOLD_DAYS, bars.length - 1);
+  // Compute ATR-based stop distance
+  let atrStopPct = MAX_HARD_STOP_PCT;
+  if (entryIdx >= 14) {
+    const atrBars = bars.slice(entryIdx - 14, entryIdx);
+    let atrSum = 0;
+    for (let k = 0; k < atrBars.length; k++) {
+      const tr = Math.max(
+        atrBars[k].high - atrBars[k].low,
+        k > 0 ? Math.abs(atrBars[k].high - atrBars[k-1].close) : 0,
+        k > 0 ? Math.abs(atrBars[k].low - atrBars[k-1].close) : 0
+      );
+      atrSum += tr;
+    }
+    const atr = atrSum / 14;
+    atrStopPct = Math.max(0.03, Math.min(MAX_HARD_STOP_PCT, (atr * (profile.atrMult || 1.5)) / entryPrice));
+  }
+
+  const maxIdx = Math.min(entryIdx + (profile.maxHoldDays || 30), bars.length - 1);
 
   for (let j = entryIdx + 1; j <= maxIdx; j++) {
     const bar = bars[j];
@@ -471,10 +492,12 @@ function simulateTrade(bars, entryIdx, entryPrice, source) {
     const low  = bar.low;
     const close = bar.close;
 
-    // Update high water mark
+    // Update high water mark and peak P&L
     if (high > highWaterMark) highWaterMark = high;
+    const currentPnlPct = (close - entryPrice) / entryPrice;
+    if (currentPnlPct > peakPnlPct) peakPnlPct = currentPnlPct;
 
-    // Check profit target (only if profile has one — mean reversion + trend use trail)
+    // 1. Profit target (only if profile has one)
     if (profile.profitTarget && close >= entryPrice * (1 + profile.profitTarget)) {
       exitPrice  = entryPrice * (1 + profile.profitTarget);
       exitReason = 'profit_target';
@@ -482,19 +505,27 @@ function simulateTrade(bars, entryIdx, entryPrice, source) {
       break;
     }
 
-    // Check trailing stop (strategy-specific % from high water mark)
-    const trailStop = highWaterMark * (1 - profile.trail);
-    if (low <= trailStop && highWaterMark > entryPrice * 1.01) {
-      exitPrice  = trailStop;
-      exitReason = 'trailing_stop';
+    // 2. Breakeven stop — if peaked +3% but dropped back to 0%
+    if (peakPnlPct >= BREAKEVEN_TRIGGER_PCT && currentPnlPct <= 0) {
+      exitPrice  = entryPrice;
+      exitReason = 'breakeven_stop';
       exitIdx    = j;
       break;
     }
 
-    // Check hard stop (strategy-specific)
-    if (low <= entryPrice * (1 - profile.hardStop)) {
-      exitPrice  = entryPrice * (1 - profile.hardStop);
-      exitReason = 'hard_stop';
+    // 3. ATR-based hard stop (adapts to each stock's volatility)
+    if (low <= entryPrice * (1 - atrStopPct)) {
+      exitPrice  = entryPrice * (1 - atrStopPct);
+      exitReason = 'atr_stop';
+      exitIdx    = j;
+      break;
+    }
+
+    // 4. Trailing stop (strategy-specific % from high water mark)
+    const trailStop = highWaterMark * (1 - profile.trail);
+    if (low <= trailStop && highWaterMark > entryPrice * 1.01) {
+      exitPrice  = trailStop;
+      exitReason = 'trailing_stop';
       exitIdx    = j;
       break;
     }

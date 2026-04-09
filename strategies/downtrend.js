@@ -40,11 +40,16 @@ async function getSignals() {
       // ADX regime filter — skip extreme trends where reversals fail
       const adxVal = adx(bars, 14);
       if (adxVal !== null && adxVal > ADX_MAX) return;
+      // Require ADX to be declining (trend losing strength = reversal more likely)
+      if (bars.length > 35) {
+        const adxPrev = adx(bars.slice(0, -5), 14);  // ADX from 5 days ago
+        if (adxVal !== null && adxPrev !== null && adxVal > adxPrev) return;  // ADX rising = trend strengthening, skip
+      }
 
       const rsiVal = rsi(cls,14);
-      if (rsiVal===null||rsiVal>35) return;
+      if (rsiVal===null||rsiVal>30) return;   // Tightened from 35: more extreme oversold = better reversal
       const days = countDowntrendDays(cls);
-      if (days < 15) return;
+      if (days < 20) return;                   // Tightened from 15: deeper exhaustion required
       const div  = hasBullishDivergence(cls);
       let score  = Math.min(50,20+days);
       if (div) score = Math.min(80,score+25);

@@ -1,7 +1,7 @@
 const { getBars, closes, bollingerBands, rsi, getVIX, adx } = require('../data/prices');
 const { UNIVERSE } = require('../data/universe');
 
-const ADX_MAX = 40; // Allow mean reversion up to moderate trend strength (raised from 25 — selloffs push ADX high on oversold quality stocks)
+const ADX_MAX = 30; // Mean reversion only in ranging/weak-trend (seed data: ADX>30 entries had 0% hard stop WR)
 
 async function getSignals() {
   const vix = await getVIX();
@@ -22,7 +22,7 @@ async function getSignals() {
       const rsiVal = rsi(cls, 14);
       if (!bb || rsiVal === null) return;
       if ((bb.upper-bb.lower)/bb.mid < 0.05) return;
-      if (price < bb.lower && rsiVal < 35) {
+      if (price < bb.lower && rsiVal < 30) {
         const dist  = (bb.lower-price)/bb.lower*100;
         // ADX bonus: lower ADX = stronger mean-reversion regime = higher score (capped at 25pt bonus)
         const adxBonus = adxVal !== null ? Math.min(12, Math.round((ADX_MAX - adxVal) * 0.5)) : 0;
