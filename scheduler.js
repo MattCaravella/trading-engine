@@ -1,8 +1,8 @@
 const fs   = require('fs');
 const path = require('path');
 const { isPreMarket, isMarketHours, isAfterHours, isWeekend, timeLabel, etTimeString, getETComponents } = require('./market_hours');
-const { refreshSlow, refreshFast, refreshNews, getCandidates, cacheStatus } = require('./signal_cache');
-const { runTradeCycle, placeOvernightTrailingStops }           = require('./engine');
+const { refreshSlow, refreshFast, refreshNews, refreshShort, getCandidates, getShortCandidates, cacheStatus } = require('./signal_cache');
+const { runTradeCycle, placeOvernightTrailingStops, runShortCycle } = require('./engine');
 const { generateSummary }                                      = require('./daily_summary');
 const { generateForecast }                                     = require('./daily_forecast');
 const { runCalibration }                                       = require('./strategy_calibrator');
@@ -69,7 +69,7 @@ async function doMarketOpen() {
 async function doFastRefresh() {
   if (Date.now()-state.lastFastRefresh < FAST_REFRESH_MS) return;
   console.log(`\n[Scheduler] FAST refresh — ${etTimeString()} ET`);
-  await refreshFast();
+  await Promise.all([refreshFast(), refreshShort()]);
   state.lastFastRefresh = Date.now();
 }
 
@@ -98,6 +98,8 @@ async function doTradeExecution() {
     const status = cacheStatus();
     if (status.slow.count===0 && status.fast.count===0) { console.log('[Scheduler] No cached signals yet'); return; }
     await runTradeCycle(getCandidates);
+    // Run short cycle in parallel context (doesn't block long cycle)
+    runShortCycle(getShortCandidates).catch(e => console.error('[Scheduler] Short cycle error:', e.message));
     state.lastTradeExecution = Date.now();
   } finally {
     executingTrade = false;
@@ -170,8 +172,8 @@ async function init() {
 
     // Catch up: fast refresh (market open equivalent)
     if (isMarketHours()) {
-      console.log('[Scheduler] Catching up: fast refresh...');
-      await refreshFast();
+      console.log('[Scheduler] Catching up: fast refresh + short scan...');
+      await Promise.all([refreshFast(), refreshShort()]);
       state.marketOpenDone = true;
       state.lastFastRefresh = Date.now();
     }
@@ -195,10 +197,10 @@ console.log('╔═════════════════════�
 console.log('║             Trading Scheduler — Starting Up              ║');
 console.log('║                                                          ║');
 console.log('║  8:00 AM ET   → Slow sources + news scrape               ║');
-console.log('║  9:30 AM ET   → Market open fast refresh                 ║');
+console.log('║  9:30 AM ET   → Market open fast refresh + short scan    ║');
 console.log('║  12:00 PM ET  → Midday news scrape                       ║');
-console.log('║  Every 5 min  → Trade execution (market hours only)      ║');
-console.log('║  Every 30 min → Fast refresh (bollinger/MA/pairs)        ║');
+console.log('║  Every 5 min  → Long + short trade execution             ║');
+console.log('║  Every 30 min → Fast refresh + short scan                ║');
 console.log('║  4:00 PM ET   → After-hours: summary + forecast + stops  ║');
 console.log('║  Overnight    → Idle                                     ║');
 console.log('╚══════════════════════════════════════════════════════════╝');

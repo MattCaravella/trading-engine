@@ -27,6 +27,9 @@ const ALPACA_URL    = process.env.ALPACA_BASE_URL;
 const MAX_DRAWDOWN_PCT     = 8;       // 8% from peak → halt new buys
 const MAX_SECTOR_PCT       = 25;      // 25% max in any sector
 const MAX_DAILY_TRADES     = 10;      // Max new buys per day (increased for faster deployment)
+const MAX_SHORT_POSITIONS  = 6;       // Max concurrent short positions
+const MAX_SHORT_EXPOSURE   = 0.30;    // Max 30% of portfolio in shorts
+const MAX_DAILY_SHORTS     = 3;       // Max new short entries per day
 const MIN_DAILY_DOLLAR_VOL = 1000000; // Skip stocks with <$1M avg daily dollar volume
 const MAX_CORRELATED       = 8;       // Max positions with high correlation (loosened from 3→6→8)
 const CORR_THRESHOLD       = 0.75;    // Correlation threshold (lowered from 0.85 — allows sector-aligned thesis)
@@ -311,6 +314,8 @@ async function reconcileStops(positions, openOrders) {
 
   const unprotected = [];
   for (const pos of positions) {
+    // Short positions (negative qty) are managed by hard stop in engine — skip trailing stop check
+    if (parseFloat(pos.qty) < 0) continue;
     if (!stopSymbols.has(pos.symbol)) {
       unprotected.push(pos.symbol);
     }
@@ -459,10 +464,67 @@ function getStatus(equity) {
   return { drawdown: dd, dailyCap: cap, peakEquity: state.peakEquity };
 }
 
+// ─── Short Trade Evaluation ──────────────────────────────────────────────────
+async function evaluateShortTrade(ticker, equity, positions) {
+  const state = loadState();
+  const results = { approved: true, reasons: [] };
+
+  // 1. Drawdown check — if we're down 8% overall, no new shorts either
+  const dd = checkDrawdown(equity, state);
+  if (dd.killed) { results.approved = false; results.reasons.push(dd.reason); }
+
+  // 2. Daily short cap
+  const today = new Date().toISOString().slice(0, 10);
+  if (state.lastDay !== today) { state.dailyTrades = {}; state.lastDay = today; }
+  const dailyShorts = state.dailyShorts?.[today] || 0;
+  if (dailyShorts >= MAX_DAILY_SHORTS) {
+    results.approved = false;
+    results.reasons.push(`DAILY SHORT CAP: ${dailyShorts}/${MAX_DAILY_SHORTS} shorts today`);
+  }
+
+  // 3. Max concurrent short positions
+  const currentShorts = positions.filter(p => parseFloat(p.qty) < 0);
+  if (currentShorts.length >= MAX_SHORT_POSITIONS) {
+    results.approved = false;
+    results.reasons.push(`MAX SHORT POSITIONS: ${currentShorts.length}/${MAX_SHORT_POSITIONS} already open`);
+  }
+
+  // 4. Max short exposure (% of equity)
+  const shortExposure = currentShorts.reduce((s, p) => s + Math.abs(parseFloat(p.market_value || 0)), 0);
+  const shortExposurePct = shortExposure / equity;
+  if (shortExposurePct >= MAX_SHORT_EXPOSURE) {
+    results.approved = false;
+    results.reasons.push(`MAX SHORT EXPOSURE: ${(shortExposurePct * 100).toFixed(1)}% >= ${MAX_SHORT_EXPOSURE * 100}%`);
+  }
+
+  // 5. Already have a short on this ticker
+  if (currentShorts.some(p => p.symbol === ticker)) {
+    results.approved = false;
+    results.reasons.push(`DUPLICATE SHORT: already short ${ticker}`);
+  }
+
+  // 6. Liquidity check
+  const liq = await checkLiquidity(ticker);
+  if (liq.blocked) { results.approved = false; results.reasons.push(liq.reason); }
+
+  saveState(state);
+  return results;
+}
+
+function recordShortExecuted() {
+  const state = loadState();
+  const today = new Date().toISOString().slice(0, 10);
+  if (!state.dailyShorts) state.dailyShorts = {};
+  state.dailyShorts[today] = (state.dailyShorts[today] || 0) + 1;
+  saveState(state);
+}
+
 module.exports = {
   evaluateTrade,
+  evaluateShortTrade,
   reconcileStops,
   recordTradeExecuted,
+  recordShortExecuted,
   updatePeakEquity,
   getStatus,
   checkLiquidity,
@@ -470,4 +532,7 @@ module.exports = {
   MAX_DRAWDOWN_PCT,
   MAX_SECTOR_PCT,
   MAX_DAILY_TRADES,
+  MAX_SHORT_POSITIONS,
+  MAX_SHORT_EXPOSURE,
+  MAX_DAILY_SHORTS,
 };

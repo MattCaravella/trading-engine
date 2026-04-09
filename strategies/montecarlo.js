@@ -14,6 +14,11 @@ const SOURCE_TO_MC_PROFILE = {
   ma_crossover: 'trend',
 };
 
+// Short profile — ruin = stock goes UP 8%+ (opposite of longs)
+const SHORT_RUIN_PCT    = 0.08;  // 8% adverse move = "ruin" for a short
+const SHORT_RUIN_LIMIT  = 20;    // Max 20% chance of that happening in 10 days
+const SHORT_RUIN_HARD   = 35;    // Hard skip if >35% chance of 8% squeeze
+
 async function simulateTicker(ticker, capital, horizon = 20) {
   const bars = await getBars(ticker, 252);
   const rets = returns(closes(bars));
@@ -49,8 +54,12 @@ async function assessPositionRisk(ticker, portfolioValue, signalSource) {
     const r = await simulateTicker(ticker, portfolioValue*0.10, mcProfile.horizon);
     if (!r) return { safe:true, maxPct:10, reason:'Insufficient data' };
     const ruin=parseFloat(r.probRuin), dd=parseFloat(r.maxDrawdownP95), vol=parseFloat(r.annualizedVol);
-    if (ruin > mcProfile.ruinMax) return { safe:false, maxPct:0, reason:`${mcProfile.label}: ${ruin}% ruin > ${mcProfile.ruinMax}% limit — skip` };
-    if (dd > mcProfile.ddMax)     return { safe:false, maxPct:2, reason:`${mcProfile.label}: ${dd}% drawdown > ${mcProfile.ddMax}% limit — skip` };
+    // Hard skip only if ruin is extreme (>30%) — protects against true blow-up candidates
+    if (ruin > 30) return { safe:false, maxPct:0, reason:`${mcProfile.label}: ${ruin}% ruin > 30% hard limit — skip` };
+    // Tiered sizing for elevated ruin (size down instead of skip)
+    if (ruin > 20) return { safe:true, maxPct:3, reason:`${mcProfile.label}: ${ruin}% ruin — sized to 3%` };
+    if (ruin > mcProfile.ruinMax) return { safe:true, maxPct:5, reason:`${mcProfile.label}: ${ruin}% ruin > ${mcProfile.ruinMax}% limit — sized to 5%` };
+    if (dd > mcProfile.ddMax)     return { safe:true, maxPct:3, reason:`${mcProfile.label}: ${dd}% drawdown > ${mcProfile.ddMax}% limit — sized to 3%` };
     if (vol > 80)   return { safe:true,  maxPct:3, reason:`${mcProfile.label}: vol=${vol}% — size to 3%` };
     if (vol > 50)   return { safe:true,  maxPct:5, reason:`${mcProfile.label}: vol=${vol}% — size to 5%` };
     return { safe:true, maxPct:10, reason:`${mcProfile.label}: vol=${vol}%, maxDD=${dd}%, ruin=${ruin}% — ok` };
@@ -73,4 +82,48 @@ async function runPortfolioStressTest(positions, portfolioValue) {
   return { totalP5:t5, totalP50:t50, totalP95:t95 };
 }
 
-module.exports = { simulateTicker, assessPositionRisk, runPortfolioStressTest };
+/**
+ * Monte Carlo risk check for SHORT positions.
+ * "Ruin" = stock goes UP 8%+ within 10 days (short squeeze / gap up scenario).
+ */
+async function assessShortRisk(ticker, portfolioValue) {
+  try {
+    const r = await simulateTicker(ticker, portfolioValue * 0.05, 10); // 5% position, 10-day horizon
+    if (!r) return { safe: true, maxPct: 5, reason: 'Insufficient data' };
+    const vol = parseFloat(r.annualizedVol);
+
+    // Count how many simulations ended with val > capital*(1+SHORT_RUIN_PCT)
+    // Re-run to get short-specific ruin count (upward moves)
+    const bars = await (async () => {
+      const { getBars, closes, returns } = require('../data/prices');
+      const b = await getBars(ticker, 252);
+      return returns(closes(b));
+    })();
+    const rets = bars;
+    if (rets.length < 30) return { safe: true, maxPct: 5, reason: 'Insufficient data' };
+    const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+    const std  = Math.sqrt(rets.reduce((s, r2) => s + (r2 - mean) ** 2, 0) / rets.length);
+    const capital = portfolioValue * 0.05;
+    let squeezeCount = 0;
+    for (let s = 0; s < SIMS; s++) {
+      let val = capital;
+      for (let d = 0; d < 10; d++) {
+        const u1 = Math.random(), u2 = Math.random();
+        const z  = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+        val *= (1 + mean + std * z);
+      }
+      if (val > capital * (1 + SHORT_RUIN_PCT)) squeezeCount++;
+    }
+    const squeezeRisk = parseFloat((squeezeCount / SIMS * 100).toFixed(1));
+
+    if (squeezeRisk > SHORT_RUIN_HARD) return { safe: false, maxPct: 0, reason: `MC(short): ${squeezeRisk}% squeeze risk > ${SHORT_RUIN_HARD}% hard limit — skip` };
+    if (squeezeRisk > SHORT_RUIN_LIMIT) return { safe: true, maxPct: 3, reason: `MC(short): ${squeezeRisk}% squeeze risk — sized to 3%` };
+    if (vol > 80) return { safe: true, maxPct: 3, reason: `MC(short): vol=${vol}% — sized to 3%` };
+    if (vol > 50) return { safe: true, maxPct: 5, reason: `MC(short): vol=${vol}% — sized to 5%` };
+    return { safe: true, maxPct: 5, reason: `MC(short): squeeze=${squeezeRisk}%, vol=${vol}% — ok` };
+  } catch (e) {
+    return { safe: true, maxPct: 3, reason: `MC(short) error: ${e.message}` };
+  }
+}
+
+module.exports = { simulateTicker, assessPositionRisk, assessShortRisk, runPortfolioStressTest };

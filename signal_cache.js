@@ -11,21 +11,25 @@ const insider_buying= require('./strategies/insider_buying');
 const downtrend     = require('./strategies/downtrend');
 const offexchange   = require('./monitors/offexchange');
 const news_sentiment = require('./monitors/news_sentiment');
+const short_entry   = require('./strategies/short_entry');
 const { aggregateByTicker } = require('./signals');
 const { criticalAlert } = require('./alerts');
 
-const SLOW_SOURCES = { congress, govcontracts, lobbying, insider_buying, downtrend, techsector };
-const FAST_SOURCES = { bollinger, ma_crossover, relative_value, trending, flights };
-const NEWS_SOURCES = { news_sentiment };  // Separate schedule: 8 AM + 12 PM (actionable hours only)
+const SLOW_SOURCES  = { congress, govcontracts, lobbying, insider_buying, downtrend, techsector };
+const FAST_SOURCES  = { bollinger, ma_crossover, relative_value, trending, flights };
+const NEWS_SOURCES  = { news_sentiment };  // Separate schedule: 8 AM + 12 PM
+const SHORT_SOURCES = { short_entry };     // Refreshed with FAST sources every 30 min
 
 // Signal staleness limits (milliseconds)
-const SLOW_MAX_AGE = 24 * 60 * 60 * 1000;  // 24 hours for alt-data
-const FAST_MAX_AGE = 2  * 60 * 60 * 1000;  // 2 hours for technical signals
-const API_FAILURE_THRESHOLD = 0.15;          // 15% failure rate → system kill
+const SLOW_MAX_AGE  = 24 * 60 * 60 * 1000;  // 24 hours for alt-data
+const FAST_MAX_AGE  = 2  * 60 * 60 * 1000;  // 2 hours for technical signals
+const SHORT_MAX_AGE = 2  * 60 * 60 * 1000;  // 2 hours for short signals
+const API_FAILURE_THRESHOLD = 0.15;           // 15% failure rate → system kill
 
-let slowCache = { signals:[], updatedAt:null };
-let fastCache = { signals:[], updatedAt:null };
-let newsCache = { signals:[], updatedAt:null };
+let slowCache  = { signals:[], updatedAt:null };
+let fastCache  = { signals:[], updatedAt:null };
+let newsCache  = { signals:[], updatedAt:null };
+let shortCache = { signals:[], updatedAt:null };
 let healthStatus = { slowFails: 0, slowTotal: 0, fastFails: 0, fastTotal: 0, degraded: false };
 
 async function refreshSlow() {
@@ -88,6 +92,30 @@ async function refreshNews() {
   console.log(`[Cache] NEWS updated — ${signals.length} signals${fails > 0 ? ` (${fails}/${total} sources failed)` : ''}`);
 }
 
+async function refreshShort() {
+  console.log('\n[Cache] Refreshing SHORT sources...');
+  const signals = [];
+  const ts = Date.now();
+  let fails = 0;
+  const total = Object.keys(SHORT_SOURCES).length;
+  await Promise.allSettled(Object.entries(SHORT_SOURCES).map(async ([name, mod]) => {
+    try {
+      const s = await mod.getSignals();
+      for (const sig of s) signals.push({ ...sig, source: name, _generatedAt: ts });
+    }
+    catch (e) { fails++; console.warn(`  [${name}] failed: ${e.message}`); }
+  }));
+  shortCache = { signals, updatedAt: new Date() };
+  console.log(`[Cache] SHORT updated — ${signals.length} candidates${fails > 0 ? ` (${fails}/${total} sources failed)` : ''}`);
+}
+
+function getShortCandidates() {
+  const now   = Date.now();
+  const fresh = shortCache.signals.filter(s => !s._generatedAt || (now - s._generatedAt) < SHORT_MAX_AGE);
+  // Sort by score descending, return top 20
+  return fresh.sort((a, b) => b.score - a.score).slice(0, 20);
+}
+
 async function getCandidates() {
   const now = Date.now();
 
@@ -148,4 +176,4 @@ function getHealthStatus() {
   };
 }
 
-module.exports = { refreshSlow, refreshFast, refreshNews, getCandidates, cacheStatus, isSystemHealthy, getHealthStatus };
+module.exports = { refreshSlow, refreshFast, refreshNews, refreshShort, getCandidates, getShortCandidates, cacheStatus, isSystemHealthy, getHealthStatus };

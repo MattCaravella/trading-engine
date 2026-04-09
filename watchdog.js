@@ -182,15 +182,16 @@ function checkSchedulerHeartbeat() {
     const hb = JSON.parse(fs.readFileSync(HEARTBEAT_FILE, 'utf8'));
     const age = Date.now() - hb.ts;
     if (age > HEARTBEAT_STALE_MS && schedulerChild && !schedulerChild.killed) {
-      log(`WARN: Scheduler heartbeat stale (${(age/1000).toFixed(0)}s old, last=${hb.lastTask}). Process appears frozen — sending SIGTERM to PID ${hb.pid}`);
-      warningAlert('Heartbeat Stale', `Scheduler heartbeat ${(age/1000).toFixed(0)}s old — process appears frozen, sending SIGTERM`, { pid: hb.pid, lastTask: hb.lastTask, staleSec: (age/1000).toFixed(0) });
-      try { process.kill(hb.pid, 'SIGTERM'); } catch {}
+      const targetPid = schedulerChild.pid; // always use the actual child PID, not hb.pid (avoids killing wrong process after PID recycling)
+      log(`WARN: Scheduler heartbeat stale (${(age/1000).toFixed(0)}s old, last=${hb.lastTask}). Process appears frozen — sending SIGTERM to PID ${targetPid}`);
+      warningAlert('Heartbeat Stale', `Scheduler heartbeat ${(age/1000).toFixed(0)}s old — process appears frozen, sending SIGTERM`, { pid: targetPid, lastTask: hb.lastTask, staleSec: (age/1000).toFixed(0) });
+      try { process.kill(targetPid, 'SIGTERM'); } catch {}
       // Grace period: if still alive after 10s, force kill
       setTimeout(() => {
         try {
-          process.kill(hb.pid, 0); // check if still alive
-          log(`WARN: Scheduler PID ${hb.pid} did not exit after SIGTERM — sending SIGKILL`);
-          process.kill(hb.pid, 'SIGKILL');
+          process.kill(targetPid, 0); // check if still alive
+          log(`WARN: Scheduler PID ${targetPid} did not exit after SIGTERM — sending SIGKILL`);
+          process.kill(targetPid, 'SIGKILL');
         } catch {} // already dead — good
       }, 10000);
     }

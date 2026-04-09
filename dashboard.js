@@ -87,10 +87,12 @@ function getSchedulerInfo() {
   const nextCycleMs  = lastCycleTime ? Math.max(0, lastCycleTime.getTime() + 5 * 60 * 1000 - Date.now()) : null;
   const schedulerAge = lastCycleTime ? Math.round((Date.now() - lastCycleTime.getTime()) / 1000) : null;
 
-  // Watchdog restarts
+  // Watchdog restarts — count only within the CURRENT session (after last "Watchdog online")
   const wdLines    = readLastLines(WATCHDOG_LOG, 200);
-  const restarts   = wdLines.filter(l => l.includes('restart #') && !l.includes('restart #0')).length;
-  const wdOnline   = wdLines.some(l => l.includes('Watchdog online'));
+  const lastOnlineIdx = wdLines.reduce((acc, l, i) => l.includes('Watchdog online') ? i : acc, -1);
+  const sessionLines  = lastOnlineIdx >= 0 ? wdLines.slice(lastOnlineIdx) : wdLines;
+  const restarts   = sessionLines.filter(l => l.includes('restart #') && !l.includes('restart #0')).length;
+  const wdOnline   = lastOnlineIdx >= 0;
 
   // Market hours check (ET)
   const etNow  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
@@ -174,20 +176,26 @@ async function getApiData() {
   const unrealizedPnl = pos.reduce((s, p) => s + parseFloat(p.unrealized_pl || 0), 0);
 
   const posData = pos.map(p => {
+    const qty    = parseFloat(p.qty || 0);
+    const isShort = qty < 0;
     const mv    = parseFloat(p.market_value || 0);
     const pnl   = parseFloat(p.unrealized_pl || 0);
     const pnlPct = parseFloat(p.unrealized_plpc || 0) * 100;
     const entry = parseFloat(p.avg_entry_price || 0);
     const curr  = parseFloat(p.current_price || 0);
-    const stop  = ord.find(o => o.symbol === p.symbol && o.side === 'sell' && o.type === 'trailing_stop');
+    // Long: trailing stop is a sell order; Short: cover stop would be a buy order (market/limit)
+    const stop  = isShort
+      ? null  // shorts managed by engine hard stop — no resting stop order
+      : ord.find(o => o.symbol === p.symbol && o.side === 'sell' && o.type === 'trailing_stop');
     return {
-      symbol: p.symbol, qty: p.qty, entry: entry.toFixed(2),
+      symbol: p.symbol, qty: p.qty, isShort,
+      entry: entry.toFixed(2),
       current: curr.toFixed(2), mv: mv.toFixed(0),
       pnl: pnl.toFixed(2), pnlPct: pnlPct.toFixed(2),
       stopPrice: stop ? parseFloat(stop.stop_price).toFixed(2) : '—',
       trailPct: stop ? stop.trail_percent + '%' : '—',
     };
-  }).sort((a, b) => parseFloat(b.mv) - parseFloat(a.mv));
+  }).sort((a, b) => Math.abs(parseFloat(b.mv)) - Math.abs(parseFloat(a.mv)));
 
   return { equity, bp, dayPnl, dayPnlPct, totalPnl, totalPnlPct, unrealizedPnl, invested, exposure, positions: posData, openOrders: ord.length };
 }
@@ -803,21 +811,27 @@ async function refresh() {
       tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--dim);padding:20px">No open positions</td></tr>';
     } else {
       tbody.innerHTML = data.positions.map(p => {
-        const up     = parseFloat(p.pnlPct) >= 0;
+        const pnlF   = parseFloat(p.pnlPct);
+        const up     = pnlF >= 0;
         const ar     = up ? '▲' : '▼';
         const badge  = up ? 'pnl-badge pnl-badge-green' : 'pnl-badge pnl-badge-red';
-        const isTiny = parseFloat(p.mv) < 1000;
-        const priceArrow = parseFloat(p.current) >= parseFloat(p.entry)
-          ? '<span style="color:var(--green);margin-left:4px">▲</span>'
-          : '<span style="color:var(--red);margin-left:4px">▼</span>';
-        return \`<tr>
-          <td>\${p.symbol}\${isTiny ? ' <span class="tag-tiny">(legacy)</span>' : ''}</td>
+        const isTiny = Math.abs(parseFloat(p.mv)) < 1000;
+        // For shorts: price going DOWN is good (green); price going UP is bad (red)
+        const priceUp = parseFloat(p.current) >= parseFloat(p.entry);
+        const priceColor = p.isShort
+          ? (priceUp ? 'var(--red)' : 'var(--green)')
+          : (priceUp ? 'var(--green)' : 'var(--red)');
+        const priceArrow = \`<span style="color:\${priceColor};margin-left:4px">\${priceUp ? '▲' : '▼'}</span>\`;
+        const shortBadge = p.isShort ? ' <span style="background:rgba(255,152,0,0.2);color:#ff9800;border:1px solid rgba(255,152,0,0.5);padding:1px 5px;border-radius:3px;font-size:10px;font-weight:bold;letter-spacing:0.5px;margin-left:4px">SHORT</span>' : '';
+        const mvDisplay = Math.abs(parseInt(p.mv)).toLocaleString();
+        return \`<tr\${p.isShort ? ' style="background:rgba(255,152,0,0.04)"' : ''}>
+          <td>\${p.symbol}\${shortBadge}\${isTiny ? ' <span class="tag-tiny">(legacy)</span>' : ''}</td>
           <td>\${p.qty}</td>
           <td>$\${p.entry}</td>
           <td>$\${p.current}\${priceArrow}</td>
-          <td>$\${parseInt(p.mv).toLocaleString()}</td>
-          <td><span class="\${badge}">\${ar} \${p.pnlPct >= 0 ? '+' : ''}\${p.pnlPct}%</span><br><span style="font-size:11px;color:\${up?'var(--green)':'var(--red)'}">\${p.pnl >= 0 ? '+' : ''}$\${fmt(p.pnl)}</span></td>
-          <td style="color:var(--dim)">\${p.stopPrice !== '—' ? '$'+p.stopPrice : '—'}</td>
+          <td>$\${mvDisplay}\${p.isShort ? ' <span style="font-size:10px;color:var(--dim)">(short)</span>' : ''}</td>
+          <td><span class="\${badge}">\${ar} \${pnlF >= 0 ? '+' : ''}\${p.pnlPct}%</span><br><span style="font-size:11px;color:\${up?'var(--green)':'var(--red)'}">\${parseFloat(p.pnl) >= 0 ? '+' : ''}$\${fmt(p.pnl)}</span></td>
+          <td style="color:var(--dim)">\${p.isShort ? 'engine-managed' : (p.stopPrice !== '—' ? '$'+p.stopPrice : '—')}</td>
         </tr>\`;
       }).join('');
     }
@@ -1292,4 +1306,12 @@ server.on('error', (err) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[Dashboard] Running at http://localhost:${PORT}`);
+});
+
+// Prevent any unhandled async error from crashing the process
+process.on('uncaughtException', (err) => {
+  console.error('[Dashboard] Uncaught exception (kept alive):', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[Dashboard] Unhandled rejection (kept alive):', reason);
 });

@@ -1,9 +1,9 @@
 const fs   = require('fs');
 const path = require('path');
 const { logTrade }           = require('./logger');
-const { assessPositionRisk } = require('./strategies/montecarlo');
+const { assessPositionRisk, assessShortRisk } = require('./strategies/montecarlo');
 const { isEarningsBlock }    = require('./monitors/earnings_guard');
-const { evaluateTrade, reconcileStops, recordTradeExecuted, updatePeakEquity } = require('./governor');
+const { evaluateTrade, reconcileStops, recordTradeExecuted, updatePeakEquity, evaluateShortTrade, recordShortExecuted } = require('./governor');
 const { processClosedTrades } = require('./postmortem');
 const { tracker } = require('./signal_lifecycle');
 const { isSystemHealthy } = require('./signal_cache');
@@ -329,6 +329,9 @@ async function runTradeCycle(getCandidatesFn) {
     await reconcileStops(positions, openOrders);
 
     for (const pos of positions) {
+      // Short positions are managed by runShortCycle — skip in long exit loop
+      if (parseFloat(pos.qty) < 0) continue;
+
       const ticker   = pos.symbol;
       const entry    = parseFloat(pos.avg_entry_price);
       const pnlPct   = parseFloat(pos.unrealized_plpc)*100;
@@ -376,20 +379,24 @@ async function runTradeCycle(getCandidatesFn) {
 
     const ranked    = await getCandidatesFn();
     const candidates = ranked.filter(t=>t.netScore>=BUY_THRESHOLD);
+    // Exclude any ticker we are currently short on (don't go long while short)
+    const shortTickers = new Set(positions.filter(p => parseFloat(p.qty) < 0).map(p => p.symbol));
     const openTickers = new Set(positions.map(p=>p.symbol));
+    // Long-only positions for slot counting
+    const longPositions = positions.filter(p => parseFloat(p.qty) > 0);
 
-    // Check exposure — stop buying once 96% deployed
-    const totalInvested = positions.reduce((s, p) => s + Math.abs(parseFloat(p.market_value || 0)), 0);
+    // Check long exposure — stop buying once 96% deployed (long side only)
+    const totalInvested = longPositions.reduce((s, p) => s + Math.abs(parseFloat(p.market_value || 0)), 0);
     const exposurePct = totalInvested / equity;
-    console.log(`[Engine] Exposure: $${totalInvested.toLocaleString()} / $${equity.toLocaleString()} = ${(exposurePct * 100).toFixed(1)}%`);
+    console.log(`[Engine] Long exposure: $${totalInvested.toLocaleString()} / $${equity.toLocaleString()} = ${(exposurePct * 100).toFixed(1)}% | Shorts: ${shortTickers.size}`);
     if (exposurePct >= MAX_EXPOSURE) { console.log(`[Engine] Target exposure reached (${(exposurePct*100).toFixed(1)}% >= ${MAX_EXPOSURE*100}%).`); saveState(state); tracker.logCycle(equity, positions.length); return; }
 
-    const slots = MAX_POSITIONS - openTickers.size;
+    const slots = MAX_POSITIONS - longPositions.length;
     if (slots <= 0) { console.log('[Engine] Max positions reached.'); saveState(state); tracker.logCycle(equity, positions.length); return; }
 
     const ACTIVE_BUY_STATES = new Set(['pending_new','new','accepted','partially_filled','pending_cancel','pending_replace','held','calculated']);
     const pendingBuys = new Set(openOrders.filter(o=>o.side==='buy'&&ACTIVE_BUY_STATES.has(o.status)).map(o=>o.symbol));
-    const toTrade = candidates.filter(c=>!openTickers.has(c.ticker)&&!pendingBuys.has(c.ticker)&&!isOnCooldown(c.ticker,state)).slice(0,slots);
+    const toTrade = candidates.filter(c=>!openTickers.has(c.ticker)&&!shortTickers.has(c.ticker)&&!pendingBuys.has(c.ticker)&&!isOnCooldown(c.ticker,state)).slice(0,slots);
     if (toTrade.length===0) console.log('[Engine] No new buy candidates this cycle.');
 
     // Register all candidates in lifecycle tracker
@@ -475,4 +482,147 @@ async function runTradeCycle(getCandidatesFn) {
   } catch(err) { console.error('[Engine] Cycle error:', err.message); saveState(state); }
 }
 
-module.exports = { runTradeCycle, placeOvernightTrailingStops };
+// ─── Short Engine ─────────────────────────────────────────────────────────────
+// Short stops: cover if stock rises 5% (loss) or falls 12% (profit target)
+// Also cover if RSI drops below 30 (oversold = bounce imminent)
+const SHORT_STOP_PCT   = 5;   // Stop loss: 5% adverse move (price up)
+const SHORT_TARGET_PCT = 12;  // Profit target: 12% decline
+const SHORT_RSI_COVER  = 30;  // RSI oversold cover trigger
+
+async function calcShortQty(ticker, equity, maxPct) {
+  try {
+    const { getBars, closes } = require('./data/prices');
+    const bars  = await getBars(ticker, 5);
+    const price = closes(bars).slice(-1)[0];
+    const pct   = maxPct ? Math.min(maxPct / 100, 0.05) : 0.05; // default 5% position
+    const qty   = Math.floor((equity * pct) / price);
+    return Math.max(1, qty);
+  } catch { return 1; }
+}
+
+async function placeShort(ticker, reason, equity, maxPct) {
+  const qty   = await calcShortQty(ticker, equity, maxPct);
+  const order = await alpaca('POST', '/orders', { symbol: ticker, qty: String(qty), side: 'sell', type: 'market', time_in_force: 'day' });
+  if (!order.id) { console.error(`  [SHORT FAILED] ${ticker}:`, JSON.stringify(order)); return null; }
+  logTrade({ ...order, engine_reason: `SHORT: ${reason}` });
+  console.log(`  [SHORT] ${ticker} x${qty} (sell to open) — ${reason}`);
+  return order;
+}
+
+async function coverShort(ticker, qty, reason) {
+  // qty should be absolute value — we buy to cover
+  const absQty = Math.abs(parseFloat(qty));
+  const order = await alpaca('POST', '/orders', { symbol: ticker, qty: String(absQty), side: 'buy', type: 'market', time_in_force: 'day' });
+  if (!order.id) { console.error(`  [COVER FAILED] ${ticker}:`, JSON.stringify(order)); return null; }
+  logTrade({ ...order, engine_reason: `COVER: ${reason}` });
+  console.log(`  [COVER] ${ticker} x${absQty} (buy to cover) — ${reason}`);
+  return order;
+}
+
+async function runShortCycle(getShortCandidatesFn) {
+  const now = new Date().toISOString();
+  console.log(`\n${'─'.repeat(60)}`);
+  console.log(`[ShortEngine] Cycle: ${now}`);
+
+  try {
+    const account = await getAccount();
+    if (account.trading_blocked) { console.warn('[ShortEngine] Trading blocked.'); return; }
+    if (!isSystemHealthy()) {
+      console.warn('[ShortEngine] System degraded — skipping short cycle');
+      return;
+    }
+
+    const equity    = parseFloat(account.equity);
+    const [positions, openOrders] = await Promise.all([getOpenPositions(), getOpenOrders()]);
+    const shorts    = positions.filter(p => parseFloat(p.qty) < 0);
+    console.log(`[ShortEngine] Equity: $${equity.toLocaleString()} | Open shorts: ${shorts.length}`);
+
+    // ── Manage existing short positions ────────────────────────────────────
+    const { getBars, closes, rsi } = require('./data/prices');
+    for (const pos of shorts) {
+      const ticker  = pos.symbol;
+      const qty     = parseFloat(pos.qty);            // negative
+      const entry   = parseFloat(pos.avg_entry_price);
+      const curr    = parseFloat(pos.current_price);
+      // For shorts: pnl% is positive when price falls, negative when price rises
+      // unrealized_plpc from Alpaca is already correct: negative qty, so gain = price drop
+      const pnlPct  = parseFloat(pos.unrealized_plpc) * 100;
+
+      console.log(`  SHORT ${ticker.padEnd(6)} entry=$${entry.toFixed(2)} curr=$${curr.toFixed(2)} P&L=${pnlPct.toFixed(2)}%`);
+
+      // Stop loss: price rose 5%+ (pnlPct will be negative = loss)
+      if (pnlPct <= -SHORT_STOP_PCT) {
+        console.log(`  [SHORT STOP] ${ticker}: adverse move ${pnlPct.toFixed(2)}% — covering`);
+        await coverShort(ticker, qty, `Stop loss: ${pnlPct.toFixed(2)}% adverse`);
+        warningAlert('Short Stop Hit', `${ticker} short stopped out at ${pnlPct.toFixed(2)}%`, { ticker, pnlPct: pnlPct.toFixed(2) + '%' });
+        continue;
+      }
+
+      // Profit target: price fell 12%+
+      if (pnlPct >= SHORT_TARGET_PCT) {
+        console.log(`  [SHORT PROFIT] ${ticker}: +${pnlPct.toFixed(2)}% — covering at target`);
+        await coverShort(ticker, qty, `Profit target: +${pnlPct.toFixed(2)}%`);
+        infoAlert('Short Profit Target', `${ticker} covered at +${pnlPct.toFixed(2)}%`, { ticker, pnlPct: '+' + pnlPct.toFixed(2) + '%' });
+        continue;
+      }
+
+      // RSI oversold cover — don't ride a bounce
+      try {
+        const bars   = await getBars(ticker, 30);
+        const cls    = closes(bars);
+        const rsiVal = rsi(cls, 14);
+        if (rsiVal !== null && rsiVal < SHORT_RSI_COVER) {
+          console.log(`  [SHORT COVER-RSI] ${ticker}: RSI=${rsiVal.toFixed(0)} < ${SHORT_RSI_COVER} — covering (oversold bounce risk)`);
+          await coverShort(ticker, qty, `RSI oversold: ${rsiVal.toFixed(0)}`);
+          infoAlert('Short Covered RSI', `${ticker} covered — RSI=${rsiVal.toFixed(0)} (oversold)`, { ticker, rsi: rsiVal.toFixed(0) });
+          continue;
+        }
+      } catch {}
+    }
+
+    // ── Enter new short positions ───────────────────────────────────────────
+    const candidates = getShortCandidatesFn();
+    if (candidates.length === 0) { console.log('[ShortEngine] No short candidates this cycle.'); return; }
+
+    const openShortTickers = new Set(shorts.map(p => p.symbol));
+    const pendingSells = new Set(
+      openOrders.filter(o => o.side === 'sell' && o.type === 'market').map(o => o.symbol)
+    );
+
+    let newShorts = 0;
+    for (const c of candidates) {
+      if (openShortTickers.has(c.ticker)) continue;
+      if (pendingSells.has(c.ticker)) continue;
+
+      // Governor short evaluation
+      const govResult = await evaluateShortTrade(c.ticker, equity, positions);
+      if (!govResult.approved) {
+        for (const r of govResult.reasons) console.log(`  [SHORT GOV BLOCK] ${c.ticker} — ${r}`);
+        continue;
+      }
+
+      // Monte Carlo squeeze risk
+      const risk = await assessShortRisk(c.ticker, equity);
+      console.log(`  [SHORT RISK] ${c.ticker}: ${risk.reason}`);
+      if (!risk.safe) {
+        console.log(`  [SHORT SKIP] ${c.ticker} — risk gate failed`);
+        continue;
+      }
+
+      const order = await placeShort(c.ticker, c.reason, equity, risk.maxPct);
+      if (order && order.id) {
+        newShorts++;
+        openShortTickers.add(c.ticker);
+        recordShortExecuted();
+      }
+
+      if (newShorts >= 2) break; // Max 2 new shorts per cycle to avoid overloading
+    }
+
+    console.log(`[ShortEngine] Cycle complete — new shorts: ${newShorts}`);
+  } catch (err) {
+    console.error('[ShortEngine] Cycle error:', err.message);
+  }
+}
+
+module.exports = { runTradeCycle, placeOvernightTrailingStops, runShortCycle };
