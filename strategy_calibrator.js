@@ -22,6 +22,7 @@
 const fs   = require('fs');
 const path = require('path');
 
+const { warningAlert } = require('./alerts');
 const CALIBRATION_FILE = path.join(__dirname, 'trade_history/calibration.json');
 const LEDGER_FILE      = path.join(__dirname, 'trade_history/performance_ledger.json');
 const SUMMARY_FILE     = path.join(__dirname, 'trade_history/performance_summary.json');
@@ -50,6 +51,24 @@ const MIN_TRADES_FOR_ADJUST = 5;     // Need 5+ trades before adjusting weights
 
 // ─── Load/Save ──────────────────────────────────────────────────────────────
 function loadCalibration() {
+  // Try database first (primary source of truth)
+  try {
+    const db = getDb();
+    if (db) {
+      const latest = db.getLatestCalibration();
+      if (latest && latest.adjusted_weights) {
+        const parsed = typeof latest.adjusted_weights === 'string' ? JSON.parse(latest.adjusted_weights) : latest.adjusted_weights;
+        const killed = typeof latest.killed_strategies === 'string' ? JSON.parse(latest.killed_strategies) : (latest.killed_strategies || []);
+        return {
+          adjustedWeights: { ...BASE_WEIGHTS, ...parsed },
+          killedStrategies: killed,
+          lastCalibrated: latest.created_at,
+          history: [],
+        };
+      }
+    }
+  } catch {}
+  // Fallback to JSON
   if (fs.existsSync(CALIBRATION_FILE)) try { return JSON.parse(fs.readFileSync(CALIBRATION_FILE)); } catch {}
   return {
     adjustedWeights: { ...BASE_WEIGHTS },
@@ -81,6 +100,23 @@ function saveCalibration(cal) {
 }
 
 function loadLedger() {
+  // Try database first
+  try {
+    const db = getDb();
+    if (db) {
+      const trades = db.getAllTrades();
+      if (trades && trades.length > 0) {
+        // Normalize DB rows to match JSON ledger format
+        return { trades: trades.map(t => ({
+          ...t,
+          sources: typeof t.sources === 'string' ? JSON.parse(t.sources) : (t.sources || []),
+          pnlPct: t.pnl_pct ?? t.pnlPct ?? 0,
+          isWin: !!(t.is_win ?? t.isWin),
+        }))};
+      }
+    }
+  } catch {}
+  // Fallback to JSON
   if (fs.existsSync(LEDGER_FILE)) try { return JSON.parse(fs.readFileSync(LEDGER_FILE)); } catch {}
   return { trades: [] };
 }
@@ -343,7 +379,12 @@ function runCalibration() {
   saveCalibration(cal);
 
   console.log(`[Calibrator] Calibrated with ${trades.length} trades`);
-  if (kills.length > 0) console.log(`[Calibrator] ⚠ ${kills.length} strateg${kills.length === 1 ? 'y' : 'ies'} killed`);
+  if (kills.length > 0) {
+    console.log(`[Calibrator] ⚠ ${kills.length} strateg${kills.length === 1 ? 'y' : 'ies'} killed`);
+    for (const k of kills) {
+      warningAlert('Strategy Killed', `${k.strategy} disabled — ${k.reason}`, { strategy: k.strategy, consecutiveLosses: k.consecutiveLosses, winRate: k.winRate });
+    }
+  }
 
   return { adjusted, kills, lessons, exits, sourceStats };
 }

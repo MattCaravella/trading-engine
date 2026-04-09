@@ -12,6 +12,7 @@ const downtrend     = require('./strategies/downtrend');
 const offexchange   = require('./monitors/offexchange');
 const news_sentiment = require('./monitors/news_sentiment');
 const { aggregateByTicker } = require('./signals');
+const { criticalAlert } = require('./alerts');
 
 const SLOW_SOURCES = { congress, govcontracts, lobbying, insider_buying, downtrend, techsector };
 const FAST_SOURCES = { bollinger, ma_crossover, relative_value, trending, flights };
@@ -126,6 +127,7 @@ function updateHealthStatus() {
   if (healthStatus.degraded) {
     console.warn(`  [HEALTH] ⚠ SYSTEM DEGRADED: ${totalFails}/${totalSources} sources failed (${(failRate*100).toFixed(0)}% > ${API_FAILURE_THRESHOLD*100}% threshold)`);
     console.warn(`  [HEALTH] ⚠ No new trades will be placed until data sources recover`);
+    criticalAlert('System Health Degraded', `${totalFails}/${totalSources} data sources failed (${(failRate*100).toFixed(0)}% failure rate)`, { totalFails, totalSources, failRate: (failRate*100).toFixed(1) + '%', threshold: (API_FAILURE_THRESHOLD*100) + '%' });
   }
 }
 

@@ -8,6 +8,7 @@ const { processClosedTrades } = require('./postmortem');
 const { tracker } = require('./signal_lifecycle');
 const { isSystemHealthy } = require('./signal_cache');
 const { isStrategyKilled } = require('./strategy_calibrator');
+const { criticalAlert, warningAlert, infoAlert } = require('./alerts');
 
 const envPath = path.join(__dirname, '.env');
 fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
@@ -180,22 +181,53 @@ async function calcQty(ticker, equity, riskMaxPct) {
   } catch { return 1; }
 }
 
+// ─── Order idempotency: prevent duplicate orders within 60s window ──────────
+const recentOrders = new Map(); // ticker → timestamp
+const IDEMPOTENCY_WINDOW_MS = 60000;
+
+function isRecentDuplicate(ticker) {
+  const last = recentOrders.get(ticker);
+  if (last && Date.now() - last < IDEMPOTENCY_WINDOW_MS) return true;
+  // Also check Alpaca for recent orders on this ticker
+  return false;
+}
+
+async function checkAlpacaDuplicate(ticker) {
+  try {
+    const recent = await alpaca('GET', `/orders?status=open&symbols=${ticker}&limit=5`);
+    if (Array.isArray(recent) && recent.some(o => o.side === 'buy' && Date.now() - new Date(o.submitted_at).getTime() < IDEMPOTENCY_WINDOW_MS)) {
+      console.log(`  [IDEMPOTENT] ${ticker}: buy order already submitted within ${IDEMPOTENCY_WINDOW_MS/1000}s — skipping`);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
 async function placeBuy(ticker, reason, equity, riskMaxPct) {
+  // Idempotency guard: check both local cache and Alpaca
+  if (isRecentDuplicate(ticker)) {
+    console.log(`  [IDEMPOTENT] ${ticker}: duplicate buy blocked (local cache)`);
+    return null;
+  }
+  if (await checkAlpacaDuplicate(ticker)) return null;
+
   const qty   = await calcQty(ticker, equity, riskMaxPct);
   const order = await alpaca('POST','/orders',{ symbol:ticker, qty:String(qty), side:'buy', type:'market', time_in_force:'day' });
   if (!order.id) { console.error(`  [BUY FAILED] ${ticker}:`, JSON.stringify(order)); return null; }
+  recentOrders.set(ticker, Date.now()); // mark as recently ordered
   logTrade({...order, engine_reason:reason});
   console.log(`  [BUY]  ${ticker} x${qty} — ${reason}`);
 
-  // Poll for fill to capture filled_avg_price (market orders fill nearly instantly)
-  pollForFill(order.id, ticker, reason).catch(e => console.warn(`  [FILL POLL] ${ticker}: ${e.message}`));
+  // Await fill resolution (market orders fill nearly instantly, 6s max wait)
+  try { await pollForFill(order.id, ticker, reason); }
+  catch (e) { console.warn(`  [FILL POLL] ${ticker}: ${e.message} — entry price may be unresolved`); }
 
   return order;
 }
 
 async function pollForFill(orderId, ticker, reason) {
   const HISTORY_DIR = path.join(__dirname, 'trade_history');
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     await new Promise(r => setTimeout(r, 2000)); // wait 2s between attempts
     const filled = await alpaca('GET', `/orders/${orderId}`);
     if (filled.filled_avg_price && parseFloat(filled.filled_avg_price) > 0) {
@@ -309,7 +341,7 @@ async function runTradeCycle(getCandidatesFn) {
       // Profit target — only if the profile has one (mean reversion and trend use trail instead)
       if (profile.profitTarget && pnlPct >= profile.profitTarget) {
         const sell = await alpaca('POST','/orders',{symbol:ticker,qty:pos.qty,side:'sell',type:'market',time_in_force:'day'});
-        if (sell.id) { logTrade({...sell,engine_reason:`Profit target (${profile.label}): +${pnlPct.toFixed(2)}%`}); console.log(`  [PROFIT TAKE] ${ticker} +${pnlPct.toFixed(2)}% (${profile.label} target=${profile.profitTarget}%)`); }
+        if (sell.id) { logTrade({...sell,engine_reason:`Profit target (${profile.label}): +${pnlPct.toFixed(2)}%`}); console.log(`  [PROFIT TAKE] ${ticker} +${pnlPct.toFixed(2)}% (${profile.label} target=${profile.profitTarget}%)`); infoAlert('Profit Target Hit', `${ticker} hit +${pnlPct.toFixed(2)}%`, { ticker, pnlPct: '+' + pnlPct.toFixed(2) + '%', target: profile.profitTarget + '%', profile: profile.label }); }
         continue;
       }
 
@@ -319,7 +351,7 @@ async function runTradeCycle(getCandidatesFn) {
       console.log(`  [STOP] ${ticker}: ATR=${atrStop.toFixed(1)}%, profile-max=${profile.hardStop}%, effective=${effectiveStop.toFixed(1)}%`);
       if (pnlPct <= -effectiveStop) {
         const sell = await alpaca('POST','/orders',{symbol:ticker,qty:pos.qty,side:'sell',type:'market',time_in_force:'day'});
-        if (sell.id) { logTrade({...sell,engine_reason:`Stop (${profile.label}, ATR=${atrStop.toFixed(1)}%): ${pnlPct.toFixed(2)}%`}); console.log(`  [HARD STOP] ${ticker} at ${effectiveStop.toFixed(1)}% (${profile.label})`); if(!state.stoppedOut)state.stoppedOut={}; state.stoppedOut[ticker]=now; }
+        if (sell.id) { logTrade({...sell,engine_reason:`Stop (${profile.label}, ATR=${atrStop.toFixed(1)}%): ${pnlPct.toFixed(2)}%`}); console.log(`  [HARD STOP] ${ticker} at ${effectiveStop.toFixed(1)}% (${profile.label})`); warningAlert('Hard Stop Hit', `${ticker} stopped out at ${pnlPct.toFixed(2)}%`, { ticker, pnlPct: pnlPct.toFixed(2) + '%', stopLevel: effectiveStop.toFixed(1) + '%', profile: profile.label }); if(!state.stoppedOut)state.stoppedOut={}; state.stoppedOut[ticker]=now; }
         // Clean up source tracking
         if (state.positionSources) delete state.positionSources[ticker];
         continue;
@@ -390,6 +422,9 @@ async function runTradeCycle(getCandidatesFn) {
       const govResult = await evaluateTrade(c.ticker, equity, positions, openOrders);
       if (!govResult.approved) {
         for (const r of govResult.reasons) console.log(`  [GOV BLOCK] ${c.ticker} — ${r}`);
+        if (govResult.reasons.some(r => r.includes('DRAWDOWN KILL'))) {
+          criticalAlert('Drawdown Kill Triggered', govResult.reasons.find(r => r.includes('DRAWDOWN KILL')), { ticker: c.ticker, equity: equity.toFixed(2) });
+        }
         tracker.reject(c._lifecycleId, 'REJECTED_GOVERNOR', govResult.reasons[0]);
         continue;
       }
@@ -418,15 +453,17 @@ async function runTradeCycle(getCandidatesFn) {
       if (order && order.id) {
         tracker.execute(c._lifecycleId, order.id);
         newTrades++;
+        boughtThisCycle.add(c.ticker);
+        recordTradeExecuted();
         // Track signal source for strategy-specific exits
         if (!state.positionSources) state.positionSources = {};
         state.positionSources[c.ticker] = top?.source || 'unknown';
         const profile = getExitProfile(top?.source);
         console.log(`  [EXIT PROFILE] ${c.ticker}: ${profile.label} (stop=${profile.hardStop}%, trail=${profile.trail}%, target=${profile.profitTarget||'none'})`);
+      } else {
+        console.log(`  [BUY FAILED] ${c.ticker} — order rejected, not counting toward cap`);
+        tracker.reject(c._lifecycleId, 'REJECTED_FILL', 'Order placement failed');
       }
-
-      boughtThisCycle.add(c.ticker);
-      recordTradeExecuted();
     }
 
     // Lifecycle summary

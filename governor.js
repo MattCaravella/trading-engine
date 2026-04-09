@@ -277,6 +277,31 @@ function recordTrade(state) {
 }
 
 // ─── 4. Stop Order Reconciliation ───────────────────────────────────────────
+// Strategy-specific trail percentages (must match engine.js EXIT_PROFILES)
+const TRAIL_BY_PROFILE = {
+  mean_reversion: 8, trend: 6, relative_value: 5, default: 6
+};
+const SOURCE_TO_PROFILE_GOV = {
+  downtrend: 'mean_reversion', bollinger: 'mean_reversion',
+  ma_crossover: 'trend', relative_value: 'relative_value',
+};
+
+function getTrailForSymbol(symbol) {
+  // Read position sources from engine state to get correct trail %
+  try {
+    const stateFile = path.join(__dirname, 'trade_history/engine_state.json');
+    if (fs.existsSync(stateFile)) {
+      const state = JSON.parse(fs.readFileSync(stateFile));
+      const source = state.positionSources?.[symbol];
+      if (source) {
+        const profile = SOURCE_TO_PROFILE_GOV[source] || 'default';
+        return TRAIL_BY_PROFILE[profile];
+      }
+    }
+  } catch {}
+  return TRAIL_BY_PROFILE.default;  // fallback: 6%
+}
+
 async function reconcileStops(positions, openOrders) {
   const stopSymbols = new Set(
     openOrders
@@ -293,19 +318,19 @@ async function reconcileStops(positions, openOrders) {
 
   if (unprotected.length > 0) {
     console.log(`  [Governor] ⚠ UNPROTECTED positions (no stop order): ${unprotected.join(', ')}`);
-    // Attempt to place trailing stops for unprotected positions
     for (const symbol of unprotected) {
       const pos = positions.find(p => p.symbol === symbol);
       if (!pos) continue;
+      const trail = getTrailForSymbol(symbol);
       try {
         const res = await fetch(`${ALPACA_URL}/v2/orders`, {
           method: 'POST',
           headers: { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbol, qty: String(pos.qty), side: 'sell', type: 'trailing_stop', trail_percent: '4', time_in_force: 'gtc' })
+          body: JSON.stringify({ symbol, qty: String(pos.qty), side: 'sell', type: 'trailing_stop', trail_percent: String(trail), time_in_force: 'gtc' })
         });
         const order = await res.json();
         if (order && order.id) {
-          console.log(`  [Governor] ✓ Re-placed trailing stop for ${symbol}`);
+          console.log(`  [Governor] ✓ Re-placed trailing stop for ${symbol} (${trail}% trail)`);
         }
       } catch (e) {
         console.warn(`  [Governor] Failed to re-place stop for ${symbol}: ${e.message}`);

@@ -176,8 +176,8 @@ describe('aggregateByTicker()', () => {
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 describe('Signal constants', () => {
-  test('BUY_THRESHOLD is 70', () => {
-    expect(BUY_THRESHOLD).toBe(70);
+  test('BUY_THRESHOLD is 65', () => {
+    expect(BUY_THRESHOLD).toBe(65);
   });
 
   test('PRIMARY_SOURCES contains expected strategies', () => {

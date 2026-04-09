@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 const fs         = require('fs');
 const path       = require('path');
 
+const { criticalAlert, warningAlert } = require('./alerts');
 const SCHEDULER    = path.join(__dirname, 'scheduler.js');
 const DASHBOARD    = path.join(__dirname, 'dashboard.js');
 const WATCHDOG_LOG = path.join(__dirname, 'watchdog.log');
@@ -60,6 +61,7 @@ function recordRestart(state) {
     log(`CRITICAL: Circuit breaker TRIPPED for ${state.name} — ` +
         `${state.restartTimestamps.length} restarts in ${windowSec}s window. ` +
         `Halting automatic restarts. Manual intervention required.`);
+    criticalAlert('Circuit Breaker Tripped', `${state.name} hit ${state.restartTimestamps.length} restarts in ${windowSec}s — automatic restarts halted`, { process: state.name, restarts: state.restartTimestamps.length, windowSeconds: windowSec });
     return true;
   }
 
@@ -143,6 +145,7 @@ const schedulerState = createCircuitState('scheduler.js');
 function startScheduler() {
   log(`Starting scheduler.js (restart #${schedulerState.consecutiveRestarts})`);
   const child = spawn(process.execPath, [SCHEDULER], { cwd: __dirname, stdio: 'inherit' });
+  schedulerChild = child;
 
   startStabilityTimer(schedulerState);
 
@@ -167,9 +170,38 @@ try {
 fs.writeFileSync(PID_FILE, String(process.pid));
 process.on('exit', () => { try { fs.unlinkSync(PID_FILE); } catch {} });
 
+// ── Heartbeat monitoring — detect frozen scheduler ─────────────────────────
+const HEARTBEAT_FILE    = path.join(__dirname, 'trade_history/heartbeat.json');
+const HEARTBEAT_STALE_MS = 180000;  // 3 minutes without heartbeat = frozen
+const HEARTBEAT_CHECK_MS = 90000;   // check every 90 seconds
+let schedulerChild = null;
+
+function checkSchedulerHeartbeat() {
+  try {
+    if (!fs.existsSync(HEARTBEAT_FILE)) return;
+    const hb = JSON.parse(fs.readFileSync(HEARTBEAT_FILE, 'utf8'));
+    const age = Date.now() - hb.ts;
+    if (age > HEARTBEAT_STALE_MS && schedulerChild && !schedulerChild.killed) {
+      log(`WARN: Scheduler heartbeat stale (${(age/1000).toFixed(0)}s old, last=${hb.lastTask}). Process appears frozen — sending SIGTERM to PID ${hb.pid}`);
+      warningAlert('Heartbeat Stale', `Scheduler heartbeat ${(age/1000).toFixed(0)}s old — process appears frozen, sending SIGTERM`, { pid: hb.pid, lastTask: hb.lastTask, staleSec: (age/1000).toFixed(0) });
+      try { process.kill(hb.pid, 'SIGTERM'); } catch {}
+      // Grace period: if still alive after 10s, force kill
+      setTimeout(() => {
+        try {
+          process.kill(hb.pid, 0); // check if still alive
+          log(`WARN: Scheduler PID ${hb.pid} did not exit after SIGTERM — sending SIGKILL`);
+          process.kill(hb.pid, 'SIGKILL');
+        } catch {} // already dead — good
+      }, 10000);
+    }
+  } catch {}
+}
+setInterval(checkSchedulerHeartbeat, HEARTBEAT_CHECK_MS);
+
 log('Watchdog online (circuit breaker enabled: ' +
     `max ${CIRCUIT_MAX_RESTARTS} restarts per ${CIRCUIT_WINDOW_MS / 60000}min, ` +
     `backoff ${BASE_DELAY_MS / 1000}s-${MAX_DELAY_MS / 1000}s, ` +
-    `stability reset after ${STABILITY_RESET_MS / 60000}min)`);
+    `stability reset after ${STABILITY_RESET_MS / 60000}min, ` +
+    `heartbeat timeout ${HEARTBEAT_STALE_MS / 1000}s)`);
 startDashboard();
 startScheduler();

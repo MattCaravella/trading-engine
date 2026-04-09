@@ -30,6 +30,13 @@ const UNIVERSE_SET = new Set(UNIVERSE);
 const CONFIDENCE_MULT = { high: 1.5, medium: 1.0, low: 0.5 };
 // Urgency multipliers
 const URGENCY_MULT    = { high: 1.3, medium: 1.0, low: 0.8 };
+// Signal age decay: exponential decay with 24h half-life
+// Breaking news (0h) = 1.0x, 12h = 0.71x, 24h = 0.5x, 48h = 0.25x
+const DECAY_HALF_LIFE_HOURS = 24;
+function ageDecay(publishedAt) {
+  const hoursOld = (Date.now() - new Date(publishedAt).getTime()) / 3600000;
+  return Math.exp(-0.693 * hoursOld / DECAY_HALF_LIFE_HOURS); // 0.693 = ln(2)
+}
 
 /**
  * Convert enriched articles into trading signals
@@ -79,11 +86,13 @@ async function getSignals() {
           };
         }
 
+        const decay = ageDecay(article.publishedAt);
         const entry = {
           confidence: confidence || 'medium',
           urgency: urgency || 'medium',
           source: article.source,
           summary: summary || article.title,
+          decay,  // 1.0 = fresh, 0.5 = 24h old, 0.25 = 48h old
         };
 
         if (sentiment === 'bullish') {
@@ -108,19 +117,23 @@ async function getSignals() {
       // Require 2+ articles to avoid noise from single mentions
       if (totalArticles < 2) continue;
 
-      // Calculate base score
-      const base = data.bullish.length * 15 - data.bearish.length * 10;
-
-      // Average confidence multiplier
+      // Calculate base score weighted by age decay
+      // Fresh articles contribute full weight, old articles contribute less
       const allEntries = [...data.bullish, ...data.bearish];
-      const avgConfidence = allEntries.reduce((sum, e) =>
-        sum + (CONFIDENCE_MULT[e.confidence] || 1.0), 0
-      ) / allEntries.length;
+      const bullWeight = data.bullish.reduce((s, e) => s + (e.decay || 1), 0);
+      const bearWeight = data.bearish.reduce((s, e) => s + (e.decay || 1), 0);
+      const base = bullWeight * 15 - bearWeight * 10;
 
-      // Average urgency multiplier
+      // Decay-weighted average confidence multiplier
+      const totalDecay = allEntries.reduce((s, e) => s + (e.decay || 1), 0) || 1;
+      const avgConfidence = allEntries.reduce((sum, e) =>
+        sum + (CONFIDENCE_MULT[e.confidence] || 1.0) * (e.decay || 1), 0
+      ) / totalDecay;
+
+      // Decay-weighted average urgency multiplier
       const avgUrgency = allEntries.reduce((sum, e) =>
-        sum + (URGENCY_MULT[e.urgency] || 1.0), 0
-      ) / allEntries.length;
+        sum + (URGENCY_MULT[e.urgency] || 1.0) * (e.decay || 1), 0
+      ) / totalDecay;
 
       // Final score
       const rawScore = base * avgConfidence * avgUrgency;

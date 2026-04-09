@@ -32,7 +32,7 @@ async function simulateTicker(ticker, capital, horizon = 20) {
       if (dd>maxDD) maxDD=dd;
     }
     finals.push(val); dds.push(maxDD);
-    if (val<capital*0.5) ruinCount++;
+    if (val<capital*0.90) ruinCount++;  // Ruin = 10% loss (aligned with 8% drawdown kill)
   }
   finals.sort((a,b)=>a-b); dds.sort((a,b)=>a-b);
   return {

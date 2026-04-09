@@ -24,6 +24,8 @@ const WATCHDOG_LOG  = path.join(__dirname, 'watchdog.log');
 const ENGINE_STATE  = path.join(__dirname, 'trade_history/engine_state.json');
 const GOV_STATE     = path.join(__dirname, 'trade_history/governor_state.json');
 const CYCLE_LOG     = path.join(__dirname, 'trade_history/cycle_log.jsonl');
+const HALT_FLAG     = path.join(__dirname, 'trade_history/halt.flag');
+const ALERTS_FILE   = path.join(__dirname, 'trade_history/alerts.jsonl');
 
 function alpaca(method, endpoint) {
   return fetch(ALPACA_URL + '/v2' + endpoint, {
@@ -50,6 +52,14 @@ function marketStatus() {
   if (mins < 960) return 'MARKET OPEN';
   if (mins < 1200) return 'AFTER-HOURS';
   return 'OVERNIGHT';
+}
+
+function logAlert(type, extra = {}) {
+  try {
+    const dir = path.join(__dirname, 'trade_history');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(ALERTS_FILE, JSON.stringify({ type, timestamp: new Date().toISOString(), ...extra }) + '\n');
+  } catch (e) { console.error('[Dashboard] Failed to log alert:', e.message); }
 }
 
 function readLastLines(filePath, n) {
@@ -132,10 +142,12 @@ function getSchedulerInfo() {
     l.includes('PRE-MARKET') || l.includes('AFTER HOURS') || l.includes('Watchdog')
   ).slice(-40);
 
+  const isHalted = fs.existsSync(HALT_FLAG);
+
   return {
     isAlive, schedStatus, lastCycleTime, nextCycleMs, schedulerAge,
     restarts, wdOnline, slowSigs, fastSigs, fastRefreshTime,
-    activityLines
+    activityLines, isHalted
   };
 }
 
@@ -200,6 +212,23 @@ async function getIndexData() {
   return result;
 }
 
+function getLastNewsRun() {
+  try {
+    const TASK_LOG = path.join(__dirname, 'trade_history/task_log.jsonl');
+    if (!fs.existsSync(TASK_LOG)) return null;
+    const lines = fs.readFileSync(TASK_LOG, 'utf8').trim().split('\n').reverse();
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        if (entry.task === 'midday_news' || entry.task === 'pre_market') {
+          return { task: entry.task, status: entry.status, at: entry.at, et: entry.et };
+        }
+      } catch {}
+    }
+  } catch {}
+  return null;
+}
+
 async function getStatus() {
   const [api, sched, indices] = await Promise.all([getApiData(), Promise.resolve(getSchedulerInfo()), getIndexData()]);
   return {
@@ -207,7 +236,9 @@ async function getStatus() {
     marketStatus: marketStatus(),
     ...api,
     scheduler: sched,
+    schedulerHalted: sched.isHalted,
     indices,
+    lastNewsRun: getLastNewsRun(),
   };
 }
 
@@ -364,6 +395,30 @@ const HTML = `<!DOCTYPE html>
     font-weight: bold; font-size: 14px;
     background: rgba(41,121,255,0.10); border: 1px solid rgba(41,121,255,0.20); color: #9ec8ff;
   }
+/* ── Emergency controls dropdown ── */
+.emergency-wrap { position:relative; display:inline-block; }
+.emergency-dropdown {
+  display:none; position:absolute; top:calc(100% + 6px); right:0;
+  background:#0e1824; border:1px solid #1e3050; border-radius:6px;
+  box-shadow:0 8px 32px rgba(0,0,0,0.7); z-index:1000; min-width:220px; overflow:hidden;
+}
+.emergency-dropdown.open { display:block; }
+.emergency-item {
+  display:block; width:100%; padding:11px 16px; background:none; border:none;
+  color:var(--text); font-size:13px; font-weight:bold; letter-spacing:0.5px;
+  text-align:left; cursor:pointer; transition:background 0.15s;
+  border-bottom:1px solid rgba(30,48,80,0.7);
+}
+.emergency-item:last-child { border-bottom:none; }
+.emergency-item:hover { background:rgba(255,255,255,0.07); }
+.emergency-item.amber { color:#ffb300; }
+.emergency-item.red   { color:var(--red); }
+.halt-badge {
+  padding:5px 12px; border-radius:4px; font-size:12px; font-weight:bold;
+  letter-spacing:1px; background:rgba(255,82,82,0.15); color:var(--red);
+  border:1px solid rgba(255,82,82,0.4); display:none; cursor:pointer;
+}
+.halt-badge.visible { display:inline-block; }
 </style>
 </head>
 <body>
@@ -375,7 +430,16 @@ const HTML = `<!DOCTYPE html>
     <div class="et-time" id="et-time">-- : -- : -- ET</div>
   </div>
   <div style="display:flex;align-items:center;gap:12px;">
+    <span class="halt-badge" id="halt-badge" title="Click to resume scheduler">&#9208; SCHEDULER HALTED</span>
     <button onclick="window.open('/news','_blank','width=1200,height=800')" style="padding:7px 18px;background:var(--accent);border:none;color:#fff;border-radius:5px;cursor:pointer;font-weight:bold;font-size:13px;letter-spacing:0.5px;transition:background 0.2s;" onmouseover="this.style.background='#448aff'" onmouseout="this.style.background='var(--accent)'">News</button>
+    <div class="emergency-wrap" id="emergency-wrap">
+      <button id="emergency-btn" onclick="toggleEmergencyMenu()" style="padding:7px 18px;background:var(--red);border:2px solid #ff1744;color:#fff;border-radius:5px;cursor:pointer;font-weight:bold;font-size:13px;letter-spacing:1px;transition:all 0.2s;text-transform:uppercase;box-shadow:0 0 12px rgba(255,23,68,0.4);" onmouseover="this.style.background='#ff1744';this.style.boxShadow='0 0 20px rgba(255,23,68,0.7)'" onmouseout="this.style.background='var(--red)';this.style.boxShadow='0 0 12px rgba(255,23,68,0.4)'">&#9888; EMERGENCY &#9660;</button>
+      <div class="emergency-dropdown" id="emergency-dropdown">
+        <button class="emergency-item amber" onclick="cancelOrders()">&#128683; Cancel All Orders</button>
+        <button class="emergency-item amber" onclick="closePositions()">&#128200; Close All Positions</button>
+        <button class="emergency-item red"   onclick="fullKillSwitch()">&#9762; Full Kill Switch</button>
+      </div>
+    </div>
     <div class="last-update" id="last-update">Connecting...</div>
   </div>
 </div>
@@ -480,6 +544,11 @@ const HTML = `<!DOCTYPE html>
       <div class="status-label">Watchdog</div>
       <div class="status-sub" id="status-watchdog">—</div>
     </div>
+    <div class="status-row">
+      <div class="dot" id="dot-news"></div>
+      <div class="status-label">News Scraper</div>
+      <div class="status-sub" id="status-news">—</div>
+    </div>
     <div class="divider"></div>
     <div class="panel-title" style="margin-bottom:8px">Next Trade Cycle</div>
     <div class="countdown" id="countdown">--:--</div>
@@ -560,6 +629,65 @@ function cleanLine(line) {
   return line.replace(/^\\s+/, '').replace(/^[─]+\\s*/, '');
 }
 
+// ── Emergency controls ────────────────────────────────────────────────────────
+function toggleEmergencyMenu() {
+  document.getElementById('emergency-dropdown').classList.toggle('open');
+}
+document.addEventListener('click', function(e) {
+  const wrap = document.getElementById('emergency-wrap');
+  if (wrap && !wrap.contains(e.target)) document.getElementById('emergency-dropdown').classList.remove('open');
+});
+
+async function cancelOrders() {
+  document.getElementById('emergency-dropdown').classList.remove('open');
+  if (!confirm('Cancel ALL open orders?\\n\\nPositions will NOT be closed. Scheduler will NOT be stopped.')) return;
+  try {
+    const res  = await fetch('/api/cancel-orders', { method: 'POST' });
+    const data = await res.json();
+    if (data.error) { alert('Error: ' + data.error); return; }
+    alert('Orders cancelled: ' + (data.ordersCancelled || 'done'));
+    refresh();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function closePositions() {
+  document.getElementById('emergency-dropdown').classList.remove('open');
+  if (!confirm('Close ALL open positions?\\n\\n(Associated orders will also be cancelled.)\\nScheduler will NOT be stopped.')) return;
+  try {
+    const res  = await fetch('/api/close-positions', { method: 'POST' });
+    const data = await res.json();
+    if (data.error) { alert('Error: ' + data.error); return; }
+    alert('Positions closed: ' + (data.positionsClosed || 'done'));
+    refresh();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function fullKillSwitch() {
+  document.getElementById('emergency-dropdown').classList.remove('open');
+  if (!confirm('FULL KILL SWITCH\\n\\n\u2022 Stop the scheduler\\n\u2022 Cancel all open orders\\n\u2022 Liquidate all positions\\n\\nAre you sure?')) return;
+  if (!confirm('CONFIRM: Liquidate ALL positions and halt the trading scheduler?')) return;
+  try {
+    const res  = await fetch('/api/kill', { method: 'POST' });
+    const data = await res.json();
+    if (data.error) { alert('Error: ' + data.error); return; }
+    alert('Kill switch executed.\\n\\nScheduler halted: ' + (data.schedulerHalted ? 'yes' : 'no') +
+      '\\nOrders cancelled: ' + (data.ordersCancelled || 'done') +
+      '\\nPositions closed: ' + (data.positionsClosed || 'done'));
+    refresh();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function resumeScheduler() {
+  if (!confirm('Resume the trading scheduler?\\n\\nHalt flag will be cleared. Trading resumes on next cycle.')) return;
+  try {
+    const res  = await fetch('/api/resume-scheduler', { method: 'POST' });
+    const data = await res.json();
+    if (data.error) { alert('Error: ' + data.error); return; }
+    alert('Scheduler resumed. It will pick up on the next cycle (up to 60s).');
+    refresh();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
 async function refresh() {
   try {
     const res  = await fetch('/api/status');
@@ -633,11 +761,33 @@ async function refresh() {
     // Health
     setDot('dot-alpaca', data.equity > 0 ? 'green' : 'red');
     document.getElementById('status-alpaca').textContent = data.equity > 0 ? fmtDollar(data.equity) : 'Disconnected';
-    setDot('dot-scheduler', data.scheduler.isAlive ? 'green' : 'red');
-    document.getElementById('status-scheduler').textContent = data.scheduler.schedStatus || 'OFFLINE';
+    // Halt badge + scheduler dot
+    const haltBadge = document.getElementById('halt-badge');
+    if (data.schedulerHalted) {
+      haltBadge.classList.add('visible');
+      haltBadge.onclick = resumeScheduler;
+      setDot('dot-scheduler', 'red');
+      document.getElementById('status-scheduler').textContent = 'HALTED \u2014 click badge to resume';
+    } else {
+      haltBadge.classList.remove('visible');
+      haltBadge.onclick = null;
+      setDot('dot-scheduler', data.scheduler.isAlive ? 'green' : 'red');
+      document.getElementById('status-scheduler').textContent = data.scheduler.schedStatus || 'OFFLINE';
+    }
     setDot('dot-watchdog', data.scheduler.wdOnline ? (data.scheduler.restarts > 0 ? 'yellow' : 'green') : 'red');
     document.getElementById('status-watchdog').textContent = data.scheduler.wdOnline
       ? (data.scheduler.restarts > 0 ? data.scheduler.restarts + ' restart(s)' : 'Running') : 'Offline';
+
+    // News scraper status
+    const news = data.lastNewsRun;
+    if (news) {
+      const newsTime = new Date(news.at).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hour12:false});
+      setDot('dot-news', news.status === 'completed' ? 'green' : 'red');
+      document.getElementById('status-news').textContent = news.status === 'completed' ? newsTime + ' ET' : 'FAILED ' + newsTime;
+    } else {
+      setDot('dot-news', 'yellow');
+      document.getElementById('status-news').textContent = 'Not yet run';
+    }
 
     // Countdown
     countdown = data.scheduler.nextCycleMs !== null ? data.scheduler.nextCycleMs : 0;
@@ -1006,6 +1156,114 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify(data));
     } catch (e) {
       res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
+    }
+  } else if (req.url === '/api/cancel-orders' && req.method === 'POST') {
+    try {
+      console.log('[Dashboard] CANCEL ORDERS activated at', new Date().toISOString());
+      const cancelRes = await fetch(ALPACA_URL + '/v2/orders', {
+        method: 'DELETE',
+        headers: { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET }
+      });
+      const cancelStatus = cancelRes.status;
+      const result = {
+        success: true,
+        ordersCancelled: (cancelStatus === 207 || cancelStatus === 200) ? 'success' : `status ${cancelStatus}`,
+        timestamp: new Date().toISOString(),
+      };
+      console.log('[Dashboard] Cancel orders result:', JSON.stringify(result));
+      logAlert('CANCEL_ORDERS', { ordersCancelled: result.ordersCancelled });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (e) {
+      console.error('[Dashboard] Cancel orders error:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+  } else if (req.url === '/api/close-positions' && req.method === 'POST') {
+    try {
+      console.log('[Dashboard] CLOSE POSITIONS activated at', new Date().toISOString());
+      const closeRes = await fetch(ALPACA_URL + '/v2/positions?cancel_orders=true', {
+        method: 'DELETE',
+        headers: { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET }
+      });
+      let closedPositions = [];
+      try { closedPositions = await closeRes.json(); } catch {}
+      const result = {
+        success: true,
+        positionsClosed: Array.isArray(closedPositions) ? closedPositions.length : 'done',
+        timestamp: new Date().toISOString(),
+      };
+      console.log('[Dashboard] Close positions result:', JSON.stringify(result));
+      logAlert('CLOSE_POSITIONS', { positionsClosed: result.positionsClosed });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (e) {
+      console.error('[Dashboard] Close positions error:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+  } else if (req.url === '/api/resume-scheduler' && req.method === 'POST') {
+    try {
+      if (fs.existsSync(HALT_FLAG)) fs.unlinkSync(HALT_FLAG);
+      console.log('[Dashboard] Scheduler halt flag cleared at', new Date().toISOString());
+      logAlert('SCHEDULER_RESUMED', {});
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, resumed: true, timestamp: new Date().toISOString() }));
+    } catch (e) {
+      console.error('[Dashboard] Resume scheduler error:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+  } else if (req.url === '/api/kill' && req.method === 'POST') {
+    try {
+      console.log('[Dashboard] FULL KILL SWITCH activated at', new Date().toISOString());
+
+      // Step 1: Write halt flag to stop scheduler on next tick
+      let schedulerHalted = false;
+      try {
+        fs.writeFileSync(HALT_FLAG, new Date().toISOString());
+        schedulerHalted = true;
+        console.log('[Dashboard] Halt flag written');
+      } catch (haltErr) {
+        console.error('[Dashboard] Failed to write halt flag:', haltErr.message);
+      }
+
+      // Step 2: Cancel all open orders
+      const cancelRes = await fetch(ALPACA_URL + '/v2/orders', {
+        method: 'DELETE',
+        headers: { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET }
+      });
+      const cancelStatus = cancelRes.status;
+
+      // Step 3: Close all positions
+      const closeRes = await fetch(ALPACA_URL + '/v2/positions?cancel_orders=true', {
+        method: 'DELETE',
+        headers: { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET }
+      });
+      let closedPositions = [];
+      try { closedPositions = await closeRes.json(); } catch {}
+
+      const result = {
+        success: true,
+        schedulerHalted,
+        ordersCancelled: (cancelStatus === 207 || cancelStatus === 200) ? 'success' : `status ${cancelStatus}`,
+        positionsClosed: Array.isArray(closedPositions) ? closedPositions.length : 'done',
+        timestamp: new Date().toISOString(),
+      };
+
+      console.log('[Dashboard] Full kill switch result:', JSON.stringify(result));
+      logAlert('KILL_SWITCH', {
+        schedulerHalted: result.schedulerHalted,
+        ordersCancelled: result.ordersCancelled,
+        positionsClosed: result.positionsClosed,
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (e) {
+      console.error('[Dashboard] Kill switch error:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
     }
   } else if (req.url === '/api/news') {
     try {

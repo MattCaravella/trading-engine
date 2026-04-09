@@ -155,7 +155,7 @@ async function generateForecast() {
   try {
     const { getCandidates } = require('./signal_cache');
     const all = await getCandidates();
-    topCandidates = all.filter(c => c.netScore >= 70).slice(0, 5);
+    topCandidates = all.filter(c => c.netScore >= 65).slice(0, 5);
   } catch { /* cache may be empty if run standalone */ }
 
   // ─── Format report ────────────────────────────────────────────────────────

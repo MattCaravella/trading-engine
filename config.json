@@ -1,0 +1,87 @@
+{
+  "engine": {
+    "maxPositions": 20,
+    "positionPct": 0.08,
+    "maxExposure": 0.96,
+    "cooldownHours": 24,
+    "buyThreshold": 65,
+    "trailPercent": 8,
+    "hardStopPct": 10,
+    "profitTarget": 12
+  },
+  "exits": {
+    "profiles": {
+      "mean_reversion": { "hardStop": 10, "trail": 8, "profitTarget": null, "label": "mean-reversion" },
+      "trend": { "hardStop": 8, "trail": 6, "profitTarget": null, "label": "trend" },
+      "relative_value": { "hardStop": 6, "trail": 5, "profitTarget": 10, "label": "relative-value" },
+      "default": { "hardStop": 8, "trail": 6, "profitTarget": 12, "label": "default" }
+    },
+    "sourceToProfile": {
+      "downtrend": "mean_reversion",
+      "bollinger": "mean_reversion",
+      "ma_crossover": "trend",
+      "relative_value": "relative_value"
+    }
+  },
+  "governor": {
+    "maxDrawdownPct": 8,
+    "maxSectorPct": 25,
+    "maxDailyTrades": 10,
+    "minDailyDollarVol": 1000000,
+    "maxCorrelated": 8,
+    "corrThreshold": 0.75,
+    "minCorrPositionVal": 500
+  },
+  "monteCarlo": {
+    "sims": 2000,
+    "profiles": {
+      "mean_reversion": { "horizon": 10, "ruinMax": 10, "ddMax": 45, "label": "MC(reversion)" },
+      "trend": { "horizon": 20, "ruinMax": 5, "ddMax": 35, "label": "MC(trend)" },
+      "default": { "horizon": 20, "ruinMax": 7, "ddMax": 40, "label": "MC(default)" }
+    },
+    "sourceToProfile": {
+      "downtrend": "mean_reversion",
+      "bollinger": "mean_reversion",
+      "ma_crossover": "trend"
+    }
+  },
+  "bollinger": {
+    "adxMax": 25,
+    "vixThreshold": 20,
+    "rsiThreshold": 35
+  },
+  "downtrend": {
+    "adxMax": 30,
+    "rsiThreshold": 35,
+    "minDowntrendDays": 15
+  },
+  "calibrator": {
+    "baseWeights": {
+      "insider_buying": 1.4,
+      "ma_crossover": 1.2,
+      "downtrend": 1.1,
+      "bollinger": 1.1,
+      "relative_value": 1.0,
+      "techsector": 0.9,
+      "congress": 1.5,
+      "offexchange": 1.3,
+      "govcontracts": 1.0,
+      "lobbying": 0.8,
+      "flights": 0.7,
+      "trending": 0.6,
+      "news_sentiment": 1.2
+    },
+    "consecutiveLossKill": 5,
+    "minWinRateKill": 0.30,
+    "minTradesForAdjust": 5
+  },
+  "signalCache": {
+    "slowMaxAgeMs": 86400000,
+    "fastMaxAgeMs": 7200000,
+    "apiFailureThreshold": 0.15
+  },
+  "scheduler": {
+    "fastRefreshMs": 1800000,
+    "tradeExecMs": 300000
+  }
+}

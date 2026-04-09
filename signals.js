@@ -10,7 +10,7 @@ const relative_value = require('./strategies/pairs_trading');
 const insider_buying= require('./strategies/insider_buying');
 const downtrend     = require('./strategies/downtrend');
 
-const BUY_THRESHOLD = 70;
+const BUY_THRESHOLD = 65;  // Aligned with engine.js
 
 // Primary sources: can trigger a buy on their own
 // Overlay sources: can only BOOST a ticker that already has a primary signal

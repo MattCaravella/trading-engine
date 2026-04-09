@@ -34,15 +34,58 @@ const { aggregateByTicker, PRIMARY_SOURCES } = require('./signals');
 const { BASE_WEIGHTS } = require('./strategy_calibrator');
 const { getSector, MAX_SECTOR_PCT, MAX_DRAWDOWN_PCT } = require('./governor');
 
-// ─── Engine constants (mirrored from engine.js) ────────────────────────────
+// ─── Engine constants (shared with engine.js) ──────────────────────────────
 const MAX_POSITIONS  = 20;
 const POSITION_PCT   = 0.08;
 const MAX_EXPOSURE   = 0.96;
-const TRAIL_PERCENT  = 4;
-const HARD_STOP_PCT  = 6;
 const BUY_THRESHOLD  = 65;
-const PROFIT_TARGET  = 7;
-const SLIPPAGE_PCT   = 0.01;  // 0.01% per trade
+
+const EXIT_SLIPPAGE_PCT = 0.03; // 3 bps exit slippage (exits are at known levels, lower impact)
+
+// ─── Dynamic slippage model ────────────────────────────────────────────────
+// Slippage scales with volatility and order size relative to daily volume
+// Base: 3 bps mega-cap, 10 bps mid-cap, 30 bps small-cap
+function estimateSlippage(ticker, orderValue, bars) {
+  if (!bars || bars.length < 20) return 0.05; // fallback 5 bps
+  const recent = bars.slice(-20);
+  const avgVolume = recent.reduce((s, b) => s + b.v, 0) / recent.length;
+  const avgPrice = recent.reduce((s, b) => s + b.c, 0) / recent.length;
+  const dailyDollarVol = avgVolume * avgPrice;
+  // Volatility factor: higher vol = more slippage
+  const closes = recent.map(b => b.c);
+  const rets = [];
+  for (let i = 1; i < closes.length; i++) rets.push((closes[i] - closes[i-1]) / closes[i-1]);
+  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const vol = Math.sqrt(rets.reduce((s, r) => s + (r - mean) ** 2, 0) / rets.length) * Math.sqrt(252) * 100;
+  // Base slippage by liquidity tier
+  let baseBps;
+  if (dailyDollarVol > 500e6) baseBps = 2;       // mega-cap: 2 bps
+  else if (dailyDollarVol > 50e6) baseBps = 5;   // large-cap: 5 bps
+  else if (dailyDollarVol > 10e6) baseBps = 10;  // mid-cap: 10 bps
+  else if (dailyDollarVol > 1e6) baseBps = 20;   // small-cap: 20 bps
+  else baseBps = 40;                              // micro-cap: 40 bps
+  // Impact factor: order size relative to daily volume (square-root model)
+  const participationRate = orderValue / (dailyDollarVol || 1);
+  const impactFactor = 1 + Math.sqrt(Math.min(participationRate, 0.1)) * 5;
+  // Vol factor: scale with realized vol (25% baseline)
+  const volFactor = Math.max(0.5, Math.min(3.0, vol / 25));
+  return (baseBps * impactFactor * volFactor) / 100; // return as percentage
+}
+
+// Strategy-specific exit profiles (must match engine.js EXIT_PROFILES)
+const EXIT_PROFILES = {
+  mean_reversion: { hardStop: 10, trail: 8, profitTarget: null  },
+  trend:          { hardStop: 8,  trail: 6, profitTarget: null  },
+  relative_value: { hardStop: 6,  trail: 5, profitTarget: 10   },
+  default:        { hardStop: 8,  trail: 6, profitTarget: 12   },
+};
+const SOURCE_TO_PROFILE = {
+  downtrend: 'mean_reversion', bollinger: 'mean_reversion',
+  ma_crossover: 'trend', relative_value: 'relative_value',
+};
+function getExitProfile(source) {
+  return EXIT_PROFILES[SOURCE_TO_PROFILE[source] || 'default'];
+}
 
 // ─── Vol-adjusted position sizing (mirrors engine.js) ───────────────────────
 const BASELINE_VOL = 0.25;
@@ -384,8 +427,11 @@ async function runBacktest(startDate, endDate, initialCapital) {
         if (!todayBar) continue;
 
         const openPrice = todayBar.o;
-        // Apply slippage
-        const fillPrice = openPrice * (1 + SLIPPAGE_PCT / 100);
+        // Dynamic slippage based on liquidity, volatility, and order size
+        const historicalForSlippage = barsUpTo(tickerBars, today);
+        const estOrderValue = equity * POSITION_PCT;
+        const slippagePct = estimateSlippage(pending.ticker, estOrderValue, historicalForSlippage);
+        const fillPrice = openPrice * (1 + slippagePct / 100);
 
         // Calculate equity for position sizing
         const invested = positions.reduce((s, p) => {
@@ -419,13 +465,14 @@ async function runBacktest(startDate, endDate, initialCapital) {
           qty,
           peakPrice: fillPrice,
           reason: pending.reason,
+          source: pending.source || 'unknown',
         });
         dailyTradeCount++;
       }
       pendingBuys = [];
     }
 
-    // ── 2. Check existing positions for exits ─────────────────────────
+    // ── 2. Check existing positions for exits (strategy-specific) ─────
     const toClose = [];
     for (let i = positions.length - 1; i >= 0; i--) {
       const pos = positions[i];
@@ -434,6 +481,7 @@ async function runBacktest(startDate, endDate, initialCapital) {
       const todayBar = barOnDate(tickerBars, today);
       if (!todayBar) continue;
 
+      const profile = getExitProfile(pos.source);
       const currentPrice = todayBar.c;
       const highPrice    = todayBar.h;
       const lowPrice     = todayBar.l;
@@ -441,29 +489,28 @@ async function runBacktest(startDate, endDate, initialCapital) {
       // Update peak price using today's high
       if (highPrice > pos.peakPrice) pos.peakPrice = highPrice;
 
-      const pnlPct = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
-
-      // Check profit target (using high — if high touched target, assume exit)
-      const highPnl = ((highPrice - pos.entryPrice) / pos.entryPrice) * 100;
-      if (highPnl >= PROFIT_TARGET) {
-        const exitPrice = pos.entryPrice * (1 + PROFIT_TARGET / 100) * (1 - SLIPPAGE_PCT / 100);
-        toClose.push({ idx: i, exitPrice, reason: 'profit_target' });
-        continue;
+      // Check profit target — only if the profile has one
+      if (profile.profitTarget) {
+        const highPnl = ((highPrice - pos.entryPrice) / pos.entryPrice) * 100;
+        if (highPnl >= profile.profitTarget) {
+          const exitPrice = pos.entryPrice * (1 + profile.profitTarget / 100) * (1 - EXIT_SLIPPAGE_PCT / 100);
+          toClose.push({ idx: i, exitPrice, reason: 'profit_target' });
+          continue;
+        }
       }
 
-      // Check hard stop (using low — if low touched stop, assume exit)
+      // Check hard stop (strategy-specific)
       const lowPnl = ((lowPrice - pos.entryPrice) / pos.entryPrice) * 100;
-      if (lowPnl <= -HARD_STOP_PCT) {
-        const exitPrice = pos.entryPrice * (1 - HARD_STOP_PCT / 100) * (1 - SLIPPAGE_PCT / 100);
+      if (lowPnl <= -profile.hardStop) {
+        const exitPrice = pos.entryPrice * (1 - profile.hardStop / 100) * (1 - EXIT_SLIPPAGE_PCT / 100);
         toClose.push({ idx: i, exitPrice, reason: 'hard_stop' });
         continue;
       }
 
-      // Check trailing stop (from peak)
+      // Check trailing stop (strategy-specific, from peak)
       const trailDrop = ((pos.peakPrice - lowPrice) / pos.peakPrice) * 100;
-      if (trailDrop >= TRAIL_PERCENT && pos.peakPrice > pos.entryPrice * 1.01) {
-        // Trailing stop only activates once we're at least 1% above entry
-        const exitPrice = pos.peakPrice * (1 - TRAIL_PERCENT / 100) * (1 - SLIPPAGE_PCT / 100);
+      if (trailDrop >= profile.trail && pos.peakPrice > pos.entryPrice * 1.01) {
+        const exitPrice = pos.peakPrice * (1 - profile.trail / 100) * (1 - EXIT_SLIPPAGE_PCT / 100);
         toClose.push({ idx: i, exitPrice, reason: 'trailing_stop' });
         continue;
       }
@@ -541,6 +588,7 @@ async function runBacktest(startDate, endDate, initialCapital) {
         ticker: c.ticker,
         reason: `Score ${c.netScore} [${c.sources.join('+')}] ${top?.reason || ''}`,
         date: today,
+        source: top?.source || 'unknown',
       });
     }
 
@@ -555,7 +603,7 @@ async function runBacktest(startDate, endDate, initialCapital) {
   for (const pos of positions) {
     const tickerBars = dataMap.get(pos.ticker);
     const todayBar = tickerBars ? barOnDate(tickerBars, lastDay) : null;
-    const exitPrice = todayBar ? todayBar.c * (1 - SLIPPAGE_PCT / 100) : pos.entryPrice;
+    const exitPrice = todayBar ? todayBar.c * (1 - EXIT_SLIPPAGE_PCT / 100) : pos.entryPrice;
     const pnl = (exitPrice - pos.entryPrice) * pos.qty;
     const pnlPct = ((exitPrice - pos.entryPrice) / pos.entryPrice) * 100;
     closedTrades.push({
@@ -571,8 +619,19 @@ async function runBacktest(startDate, endDate, initialCapital) {
     });
   }
 
+  // ── Compute SPY benchmark for alpha comparison ──────────────────
+  const spyBars = dataMap.get('SPY');
+  let benchmarkReturn = null;
+  if (spyBars && tradingDates.length >= 2) {
+    const spyStart = barOnDate(spyBars, tradingDates[0]);
+    const spyEnd = barOnDate(spyBars, tradingDates[tradingDates.length - 1]);
+    if (spyStart && spyEnd) {
+      benchmarkReturn = ((spyEnd.c - spyStart.o) / spyStart.o) * 100;
+    }
+  }
+
   console.log('');
-  return { equityCurve, closedTrades, initialCapital };
+  return { equityCurve, closedTrades, initialCapital, benchmarkReturn };
 }
 
 // ─── Performance metrics ────────────────────────────────────────────────────
@@ -682,6 +741,15 @@ function computeMetrics(equityCurve, closedTrades, initialCapital) {
   };
 }
 
+function addBenchmarkMetrics(metrics, benchmarkReturn) {
+  if (benchmarkReturn !== null && benchmarkReturn !== undefined) {
+    metrics.benchmarkReturn = Math.round(benchmarkReturn * 100) / 100;
+    metrics.alpha = Math.round((metrics.totalReturn - benchmarkReturn) * 100) / 100;
+    metrics.beatsBenchmark = metrics.totalReturn > benchmarkReturn;
+  }
+  return metrics;
+}
+
 // ─── Walk-forward ───────────────────────────────────────────────────────────
 
 async function runWalkForward(startDate, endDate, initialCapital, trainMonths = 6, testMonths = 1, advanceMonths = 1) {
@@ -743,25 +811,62 @@ async function runWalkForward(startDate, endDate, initialCapital, trainMonths = 
     allTestEquity.push(...testResult.equityCurve);
   }
 
-  // Aggregate out-of-sample metrics
+  // ── Per-window detailed results ──────────────────────────────────────
+  console.log(`\n${'='.repeat(70)}`);
+  console.log('PER-WINDOW RESULTS (Out-of-Sample)');
+  console.log(`${'='.repeat(70)}`);
+  console.log(`  ${'#'.padEnd(4)} ${'Test Period'.padEnd(26)} ${'Return'.padStart(9)} ${'Sharpe'.padStart(8)} ${'MaxDD'.padStart(8)} ${'WinRate'.padStart(9)} ${'Trades'.padStart(7)}`);
+  console.log(`  ${'-'.repeat(71)}`);
+
+  for (const r of allTestResults) {
+    const m = r.testMetrics;
+    const retStr = (m.totalReturn >= 0 ? '+' : '') + m.totalReturn.toFixed(2) + '%';
+    const sharpeStr = m.sharpe.toFixed(2);
+    const ddStr = '-' + m.maxDrawdown.toFixed(2) + '%';
+    const wrStr = m.winRate.toFixed(1) + '%';
+    console.log(`  ${String(r.window).padEnd(4)} ${(r.testStart + ' to ' + r.testEnd).padEnd(26)} ${retStr.padStart(9)} ${sharpeStr.padStart(8)} ${ddStr.padStart(8)} ${wrStr.padStart(9)} ${String(m.totalTrades).padStart(7)}`);
+  }
+
+  // ── Aggregate out-of-sample metrics ─────────────────────────────────
   console.log(`\n${'='.repeat(70)}`);
   console.log('WALK-FORWARD AGGREGATE (Out-of-Sample)');
   console.log(`${'='.repeat(70)}`);
 
   const oosReturns = allTestResults.map(r => r.testMetrics.totalReturn);
-  const avgOOS = oosReturns.reduce((a, b) => a + b, 0) / oosReturns.length;
-  const positiveWindows = oosReturns.filter(r => r > 0).length;
+  const oosSharpes = allTestResults.map(r => r.testMetrics.sharpe);
+  const oosDrawdowns = allTestResults.map(r => r.testMetrics.maxDrawdown);
+  const oosWinRates = allTestResults.map(r => r.testMetrics.winRate);
 
-  console.log(`  Windows:           ${windows.length}`);
-  console.log(`  Avg OOS Return:    ${avgOOS.toFixed(2)}%`);
-  console.log(`  Positive Windows:  ${positiveWindows}/${windows.length} (${(positiveWindows / windows.length * 100).toFixed(0)}%)`);
-  console.log(`  Best Window:       ${Math.max(...oosReturns).toFixed(2)}%`);
-  console.log(`  Worst Window:      ${Math.min(...oosReturns).toFixed(2)}%`);
-  console.log(`  Total OOS Trades:  ${allTestTrades.length}`);
+  const avgOOS = oosReturns.reduce((a, b) => a + b, 0) / oosReturns.length;
+  const avgSharpe = oosSharpes.reduce((a, b) => a + b, 0) / oosSharpes.length;
+  const maxDD = Math.max(...oosDrawdowns);
+  const avgWinRate = oosWinRates.reduce((a, b) => a + b, 0) / oosWinRates.length;
+  const positiveWindows = oosReturns.filter(r => r > 0).length;
+  const consistencyRatio = (positiveWindows / windows.length * 100);
+
+  console.log(`  Windows:              ${windows.length}`);
+  console.log(`  Avg OOS Return:       ${avgOOS >= 0 ? '+' : ''}${avgOOS.toFixed(2)}%`);
+  console.log(`  Avg OOS Sharpe:       ${avgSharpe.toFixed(2)}`);
+  console.log(`  Avg OOS Win Rate:     ${avgWinRate.toFixed(1)}%`);
+  console.log(`  Worst OOS Drawdown:   -${maxDD.toFixed(2)}%`);
+  console.log(`  Best Window:          ${Math.max(...oosReturns).toFixed(2)}%`);
+  console.log(`  Worst Window:         ${Math.min(...oosReturns).toFixed(2)}%`);
+  console.log(`  Total OOS Trades:     ${allTestTrades.length}`);
 
   if (allTestTrades.length > 0) {
     const oosWins = allTestTrades.filter(t => t.pnl > 0);
-    console.log(`  OOS Win Rate:      ${(oosWins.length / allTestTrades.length * 100).toFixed(1)}%`);
+    console.log(`  OOS Win Rate (all):   ${(oosWins.length / allTestTrades.length * 100).toFixed(1)}%`);
+  }
+
+  console.log(`  Consistency Ratio:    ${positiveWindows}/${windows.length} (${consistencyRatio.toFixed(0)}%)`);
+
+  // Consistency assessment
+  if (consistencyRatio >= 70) {
+    console.log(`\n  Assessment: STRONG — Strategy is profitable in ${consistencyRatio.toFixed(0)}% of out-of-sample windows`);
+  } else if (consistencyRatio >= 50) {
+    console.log(`\n  Assessment: MODERATE — Strategy is profitable in ${consistencyRatio.toFixed(0)}% of out-of-sample windows`);
+  } else {
+    console.log(`\n  Assessment: WEAK — Strategy is profitable in only ${consistencyRatio.toFixed(0)}% of out-of-sample windows`);
   }
 
   return { windows: allTestResults, allTestTrades, allTestEquity };
@@ -781,6 +886,10 @@ function printResults(metrics) {
   console.log(`  Final Equity:        $${metrics.finalEquity.toLocaleString()}`);
   console.log(`  Total Return:        ${metrics.totalReturn >= 0 ? '+' : ''}${metrics.totalReturn}%`);
   console.log(`  Annualized Return:   ${metrics.annualizedReturn >= 0 ? '+' : ''}${metrics.annualizedReturn}%`);
+  if (metrics.benchmarkReturn !== undefined) {
+    console.log(`  SPY Benchmark:       ${metrics.benchmarkReturn >= 0 ? '+' : ''}${metrics.benchmarkReturn}%`);
+    console.log(`  Alpha vs SPY:        ${metrics.alpha >= 0 ? '+' : ''}${metrics.alpha}% ${metrics.beatsBenchmark ? '(BEATING)' : '(LAGGING)'}`);
+  }
 
   console.log(`\n  RISK`);
   console.log(`  ${line}`);
@@ -882,7 +991,7 @@ async function main() {
   console.log(`  Period:   ${opts.startDate} to ${opts.endDate}`);
   console.log(`  Capital:  $${opts.capital.toLocaleString()}`);
   console.log(`  Mode:     ${opts.walkforward ? 'Walk-Forward' : 'Full Backtest'}`);
-  console.log(`  Slippage: ${SLIPPAGE_PCT}% per trade`);
+  console.log(`  Slippage: ${EXIT_SLIPPAGE_PCT}% per trade`);
   console.log(`${'='.repeat(70)}`);
 
   const startTime = Date.now();
@@ -905,8 +1014,8 @@ async function main() {
     );
     console.log(`\n[Backtester] Walk-forward results saved to trade_history/`);
   } else {
-    const { equityCurve, closedTrades, initialCapital } = await runBacktest(opts.startDate, opts.endDate, opts.capital);
-    const metrics = computeMetrics(equityCurve, closedTrades, initialCapital);
+    const result = await runBacktest(opts.startDate, opts.endDate, opts.capital);
+    const metrics = addBenchmarkMetrics(computeMetrics(result.equityCurve, result.closedTrades, result.initialCapital), result.benchmarkReturn);
     printResults(metrics);
     saveResults(metrics, equityCurve, closedTrades);
   }
