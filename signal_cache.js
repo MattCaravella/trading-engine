@@ -219,15 +219,38 @@ async function refreshAggressive() {
 
 function getAggressiveCandidates() {
   const now = Date.now();
-  // Filter out stale signals (> 30 min)
   const fresh = aggressiveCache.signals.filter(s => !s._generatedAt || (now - s._generatedAt) < AGGRESSIVE_MAX_AGE);
   const staleCount = aggressiveCache.signals.length - fresh.length;
-  if (staleCount > 0) {
-    console.log(`  [Cache] Dropped ${staleCount} stale aggressive signals`);
-  }
+  if (staleCount > 0) console.log(`  [Cache] Dropped ${staleCount} stale aggressive signals`);
   if (fresh.length === 0) return [];
-  // Aggregate by ticker and return top 20 sorted by score
-  return aggregateByTicker(fresh).slice(0, 20);
+
+  // Aggressive aggregation: simple — all sources are primary, no overlay penalty
+  // Group by ticker, sum scores, pick highest-scoring source as top signal
+  const byTicker = {};
+  for (const sig of fresh) {
+    if (!byTicker[sig.ticker]) byTicker[sig.ticker] = { ticker: sig.ticker, signals: [], totalScore: 0, sources: [] };
+    byTicker[sig.ticker].signals.push(sig);
+    byTicker[sig.ticker].totalScore += sig.score;
+    if (!byTicker[sig.ticker].sources.includes(sig.source)) byTicker[sig.ticker].sources.push(sig.source);
+  }
+
+  return Object.values(byTicker)
+    .map(t => {
+      const top = t.signals.sort((a, b) => b.score - a.score)[0];
+      return {
+        ticker: t.ticker,
+        netScore: Math.min(100, t.totalScore),
+        signals: t.signals,
+        sources: t.sources,
+        direction: top.direction,
+        topReason: top.reason,
+        topSource: top.source,
+        confirmedByTech: true, // aggressive engine treats all signals as confirmed
+      };
+    })
+    .filter(c => c.netScore >= 50) // aggressive threshold
+    .sort((a, b) => b.netScore - a.netScore)
+    .slice(0, 20);
 }
 
 module.exports = { refreshSlow, refreshFast, refreshNews, refreshShort, refreshAggressive, getCandidates, getShortCandidates, getAggressiveCandidates, cacheStatus, isSystemHealthy, getHealthStatus };
