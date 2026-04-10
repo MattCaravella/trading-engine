@@ -6,7 +6,7 @@
  *
  * Key differences from main engine:
  *   - 10% of total equity allocation
- *   - 3.5% per position (of aggressive allocation)
+ *   - 12.5% per position (of aggressive allocation, ~$1,250 on $10K)
  *   - Lower buy threshold (50 vs 65)
  *   - Tight stops: 4% hard stop, 6% trail, 15% profit target
  *   - Max 48-hour hold time
@@ -34,7 +34,7 @@ const ALPACA_URL    = process.env.ALPACA_BASE_URL;
 
 // ─── Aggressive Parameters ──────────────────────────────────────────────────
 const AGGRESSIVE_ALLOCATION = 0.10;  // 10% of total equity
-const POSITION_PCT   = 0.035;        // 3.5% of aggressive allocation per trade
+const POSITION_PCT   = 0.125;        // 12.5% of aggressive allocation per trade (~$1,250 on $10K)
 const MAX_POSITIONS  = 8;
 const BUY_THRESHOLD  = 50;           // Lower bar — accept more signals
 const PROFIT_TARGET  = 15;           // Take profits at +15%
