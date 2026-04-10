@@ -1,6 +1,14 @@
 function getET() {
+  // Use Intl to get ET components directly — avoids re-parsing ambiguity
   const now = new Date();
-  return new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  });
+  const parts = {};
+  for (const { type, value } of fmt.formatToParts(now)) parts[type] = value;
+  return new Date(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`);
 }
 
 function getETComponents() {
@@ -69,7 +77,13 @@ function timeLabel() {
 }
 
 function etTimeString() {
-  return getET().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' });
+  const et = getET();
+  let h = et.getHours();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  if (h > 12) h -= 12;
+  if (h === 0) h = 12;
+  const m = String(et.getMinutes()).padStart(2, '0');
+  return `${String(h).padStart(2, '0')}:${m} ${ampm}`;
 }
 
 module.exports = { getET, getETComponents, isWeekend, isWeekday, isPreMarket, isMarketHours, isAfterHours, isTradingDay, isMarketHoliday, timeLabel, etTimeString, TIMES };
