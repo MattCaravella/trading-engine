@@ -72,12 +72,12 @@ function estimateSlippage(ticker, orderValue, bars) {
   return (baseBps * impactFactor * volFactor) / 100; // return as percentage
 }
 
-// Strategy-specific exit profiles (must match engine.js EXIT_PROFILES)
+// Strategy-specific exit profiles with trailing ladder (must match engine.js)
 const EXIT_PROFILES = {
-  mean_reversion: { hardStop: 10, trail: 8, profitTarget: null  },
-  trend:          { hardStop: 8,  trail: 6, profitTarget: null  },
-  relative_value: { hardStop: 6,  trail: 5, profitTarget: 10   },
-  default:        { hardStop: 8,  trail: 6, profitTarget: 12   },
+  mean_reversion: { hardStop: 10, trail: 8, profitTarget: null, ladder1: 8,  ladder2: 16, trail2: 5, trail3: 3 },
+  trend:          { hardStop: 8,  trail: 6, profitTarget: null, ladder1: 7,  ladder2: 14, trail2: 4, trail3: 3 },
+  relative_value: { hardStop: 6,  trail: 5, profitTarget: 10,  ladder1: 5,  ladder2: 8,  trail2: 3, trail3: 2 },
+  default:        { hardStop: 8,  trail: 6, profitTarget: 12,  ladder1: 7,  ladder2: 14, trail2: 4, trail3: 3 },
 };
 const SOURCE_TO_PROFILE = {
   downtrend: 'mean_reversion', bollinger: 'mean_reversion',
@@ -488,10 +488,34 @@ async function runBacktest(startDate, endDate, initialCapital) {
 
       // Update peak price using today's high
       if (highPrice > pos.peakPrice) pos.peakPrice = highPrice;
+      const pnlPct = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
+      const highPnl = ((highPrice - pos.entryPrice) / pos.entryPrice) * 100;
 
-      // Check profit target — only if the profile has one
-      if (profile.profitTarget) {
-        const highPnl = ((highPrice - pos.entryPrice) / pos.entryPrice) * 100;
+      // ── Trailing ladder: partial sells at profit milestones ──────────
+      if (profile.ladder1 && pos.qty >= 3) {
+        if (!pos.ladder1Sold && highPnl >= profile.ladder1) {
+          const sellQty = Math.max(1, Math.floor(pos.qty * 0.33));
+          const exitPrice = pos.entryPrice * (1 + profile.ladder1 / 100) * (1 - EXIT_SLIPPAGE_PCT / 100);
+          // Record partial close
+          toClose.push({ idx: i, exitPrice, reason: 'ladder_t1', partialQty: sellQty });
+          pos.ladder1Sold = true;
+          pos.activeTrail = profile.trail2; // tighten trail on remainder
+          continue;
+        }
+        if (pos.ladder1Sold && !pos.ladder2Sold && highPnl >= profile.ladder2) {
+          const sellQty = Math.max(1, Math.floor(pos.qty * 0.50));
+          if (sellQty < pos.qty) {
+            const exitPrice = pos.entryPrice * (1 + profile.ladder2 / 100) * (1 - EXIT_SLIPPAGE_PCT / 100);
+            toClose.push({ idx: i, exitPrice, reason: 'ladder_t2', partialQty: sellQty });
+            pos.ladder2Sold = true;
+            pos.activeTrail = profile.trail3; // tightest trail on last tranche
+            continue;
+          }
+        }
+      }
+
+      // Check profit target — only if the profile has one AND no ladder active
+      if (profile.profitTarget && !pos.ladder1Sold) {
         if (highPnl >= profile.profitTarget) {
           const exitPrice = pos.entryPrice * (1 + profile.profitTarget / 100) * (1 - EXIT_SLIPPAGE_PCT / 100);
           toClose.push({ idx: i, exitPrice, reason: 'profit_target' });
@@ -507,10 +531,11 @@ async function runBacktest(startDate, endDate, initialCapital) {
         continue;
       }
 
-      // Check trailing stop (strategy-specific, from peak)
+      // Check trailing stop (uses tightened trail if ladder tranches sold)
+      const activeTrail = pos.activeTrail || profile.trail;
       const trailDrop = ((pos.peakPrice - lowPrice) / pos.peakPrice) * 100;
-      if (trailDrop >= profile.trail && pos.peakPrice > pos.entryPrice * 1.01) {
-        const exitPrice = pos.peakPrice * (1 - profile.trail / 100) * (1 - EXIT_SLIPPAGE_PCT / 100);
+      if (trailDrop >= activeTrail && pos.peakPrice > pos.entryPrice * 1.01) {
+        const exitPrice = pos.peakPrice * (1 - activeTrail / 100) * (1 - EXIT_SLIPPAGE_PCT / 100);
         toClose.push({ idx: i, exitPrice, reason: 'trailing_stop' });
         continue;
       }
@@ -520,21 +545,27 @@ async function runBacktest(startDate, endDate, initialCapital) {
     toClose.sort((a, b) => b.idx - a.idx);
     for (const close of toClose) {
       const pos = positions[close.idx];
-      const pnl = (close.exitPrice - pos.entryPrice) * pos.qty;
+      const isPartial = close.partialQty && close.partialQty < pos.qty;
+      const closeQty = isPartial ? close.partialQty : pos.qty;
+      const pnl = (close.exitPrice - pos.entryPrice) * closeQty;
       const pnlPct = ((close.exitPrice - pos.entryPrice) / pos.entryPrice) * 100;
-      cash += close.exitPrice * pos.qty;
+      cash += close.exitPrice * closeQty;
       closedTrades.push({
         ticker: pos.ticker,
         entryDate: pos.entryDate,
         exitDate: today,
         entryPrice: pos.entryPrice,
         exitPrice: close.exitPrice,
-        qty: pos.qty,
+        qty: closeQty,
         pnl: Math.round(pnl * 100) / 100,
         pnlPct: Math.round(pnlPct * 100) / 100,
         reason: close.reason,
       });
-      positions.splice(close.idx, 1);
+      if (isPartial) {
+        pos.qty -= closeQty; // reduce position, keep remainder
+      } else {
+        positions.splice(close.idx, 1); // fully closed
+      }
     }
 
     // ── 3. Calculate daily equity ─────────────────────────────────────

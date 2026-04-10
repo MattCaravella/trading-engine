@@ -25,15 +25,14 @@ const MAX_EXPOSURE   = 0.96;
 const COOLDOWN_HOURS = 24;
 const BUY_THRESHOLD  = 65;
 
-// ─── Strategy-specific exit templates ────────────────────────────────────────
-// Mean reversion needs wider stops and no fixed profit target (let trail handle it)
-// Trend-following needs moderate stops and room to run
-// Relative value uses tighter stops with a fixed profit target
+// ─── Strategy-specific exit templates with trailing ladder ───────────────────
+// Ladder sells in tranches: lock gains at ladder1, tighten trail, lock more at ladder2
+// 47% of trades hit +7% MFE, 17% hit +14% — ladder captures $158K left on table
 const EXIT_PROFILES = {
-  mean_reversion: { hardStop: 10, trail: 8, profitTarget: null,  label: 'mean-reversion' },  // downtrend, bollinger
-  trend:          { hardStop: 8,  trail: 6, profitTarget: null,  label: 'trend' },            // ma_crossover
-  relative_value: { hardStop: 6,  trail: 5, profitTarget: 10,    label: 'relative-value' },   // relative_value
-  default:        { hardStop: 8,  trail: 6, profitTarget: 12,    label: 'default' },           // insider, techsector, etc
+  mean_reversion: { hardStop: 10, trail: 8, profitTarget: null, ladder1: 8,  ladder2: 16, trail2: 5, trail3: 3, label: 'mean-reversion' },
+  trend:          { hardStop: 8,  trail: 6, profitTarget: null, ladder1: 7,  ladder2: 14, trail2: 4, trail3: 3, label: 'trend' },
+  relative_value: { hardStop: 6,  trail: 5, profitTarget: 10,  ladder1: 5,  ladder2: 8,  trail2: 3, trail3: 2, label: 'relative-value' },
+  default:        { hardStop: 8,  trail: 6, profitTarget: 12,  ladder1: 7,  ladder2: 14, trail2: 4, trail3: 3, label: 'default' },
 };
 
 const SOURCE_TO_PROFILE = {
@@ -341,11 +340,63 @@ async function runTradeCycle(getCandidatesFn) {
       const profile = getExitProfile(source);
       console.log(`  ${ticker.padEnd(6)} entry=$${entry.toFixed(2)} P&L=${pnlPct.toFixed(2)}% [${profile.label}]`);
 
-      // Profit target — only if the profile has one (mean reversion and trend use trail instead)
-      if (profile.profitTarget && pnlPct >= profile.profitTarget) {
+      // ── Trailing Ladder: sell in tranches to lock gains ──────────────────
+      // Tranche 1: sell 33% at ladder1 target, tighten trail
+      // Tranche 2: sell 33% at ladder2 target, tighten trail further
+      // Remainder: let trailing stop handle it
+      if (!state.positionLadder) state.positionLadder = {};
+      const ladder = state.positionLadder[ticker];
+      const currentQty = parseInt(pos.qty);
+
+      if (profile.ladder1 && currentQty >= 3) {
+        // Tranche 1: sell 33% at first target
+        if (!ladder?.tranche1Sold && pnlPct >= profile.ladder1) {
+          const sellQty = Math.max(1, Math.floor(currentQty * 0.33));
+          const sell = await alpaca('POST','/orders',{symbol:ticker,qty:String(sellQty),side:'sell',type:'market',time_in_force:'day'});
+          if (sell && sell.id) {
+            logTrade({...sell, engine_reason:`Ladder T1 (${profile.label}): +${pnlPct.toFixed(2)}%, sold ${sellQty}/${currentQty} shares`});
+            console.log(`  [LADDER T1] ${ticker} +${pnlPct.toFixed(1)}% — sold ${sellQty} shares (33%), tightening trail to ${profile.trail2}%`);
+            infoAlert('Ladder T1', `${ticker}: sold ${sellQty}/${currentQty} at +${pnlPct.toFixed(1)}%`, { ticker, tranche: 1, soldQty: sellQty, pnlPct: pnlPct.toFixed(1) + '%' });
+            if (!state.positionLadder[ticker]) state.positionLadder[ticker] = { originalQty: currentQty };
+            state.positionLadder[ticker].tranche1Sold = true;
+            // Cancel existing trail and place tighter one on remainder
+            try {
+              const existingTrail = openOrders.find(o => o.symbol === ticker && o.side === 'sell' && o.type === 'trailing_stop');
+              if (existingTrail) await alpaca('DELETE', `/orders/${existingTrail.id}`);
+            } catch {}
+            await placeTrailingStop(ticker, currentQty - sellQty, entry, profile.trail2);
+          }
+          continue; // Skip other exit checks this cycle — let the partial sale settle
+        }
+
+        // Tranche 2: sell another 33% at second target
+        if (ladder?.tranche1Sold && !ladder?.tranche2Sold && pnlPct >= profile.ladder2) {
+          const sellQty = Math.max(1, Math.floor(currentQty * 0.50)); // 50% of remainder ≈ 33% of original
+          if (sellQty < currentQty) { // don't sell everything
+            const sell = await alpaca('POST','/orders',{symbol:ticker,qty:String(sellQty),side:'sell',type:'market',time_in_force:'day'});
+            if (sell && sell.id) {
+              logTrade({...sell, engine_reason:`Ladder T2 (${profile.label}): +${pnlPct.toFixed(2)}%, sold ${sellQty} more shares`});
+              console.log(`  [LADDER T2] ${ticker} +${pnlPct.toFixed(1)}% — sold ${sellQty} more shares, tightening trail to ${profile.trail3}%`);
+              infoAlert('Ladder T2', `${ticker}: sold ${sellQty} more at +${pnlPct.toFixed(1)}%`, { ticker, tranche: 2, soldQty: sellQty, pnlPct: pnlPct.toFixed(1) + '%' });
+              state.positionLadder[ticker].tranche2Sold = true;
+              // Cancel and replace trail with tightest stop
+              try {
+                const existingTrail = openOrders.find(o => o.symbol === ticker && o.side === 'sell' && o.type === 'trailing_stop');
+                if (existingTrail) await alpaca('DELETE', `/orders/${existingTrail.id}`);
+              } catch {}
+              await placeTrailingStop(ticker, currentQty - sellQty, entry, profile.trail3);
+            }
+            continue;
+          }
+        }
+      }
+
+      // Profit target — only if the profile has one AND ladder hasn't already handled it
+      if (profile.profitTarget && !ladder?.tranche1Sold && pnlPct >= profile.profitTarget) {
         const sell = await alpaca('POST','/orders',{symbol:ticker,qty:pos.qty,side:'sell',type:'market',time_in_force:'day'});
         if (sell.id) { logTrade({...sell,engine_reason:`Profit target (${profile.label}): +${pnlPct.toFixed(2)}%`}); console.log(`  [PROFIT TAKE] ${ticker} +${pnlPct.toFixed(2)}% (${profile.label} target=${profile.profitTarget}%)`); infoAlert('Profit Target Hit', `${ticker} hit +${pnlPct.toFixed(2)}%`, { ticker, pnlPct: '+' + pnlPct.toFixed(2) + '%', target: profile.profitTarget + '%', profile: profile.label }); }
         if (state.positionSources) delete state.positionSources[ticker];
+        if (state.positionLadder) delete state.positionLadder[ticker];
         continue;
       }
 
@@ -357,13 +408,16 @@ async function runTradeCycle(getCandidatesFn) {
         const sell = await alpaca('POST','/orders',{symbol:ticker,qty:pos.qty,side:'sell',type:'market',time_in_force:'day'});
         if (sell.id) { logTrade({...sell,engine_reason:`Stop (${profile.label}, ATR=${atrStop.toFixed(1)}%): ${pnlPct.toFixed(2)}%`}); console.log(`  [HARD STOP] ${ticker} at ${effectiveStop.toFixed(1)}% (${profile.label})`); warningAlert('Hard Stop Hit', `${ticker} stopped out at ${pnlPct.toFixed(2)}%`, { ticker, pnlPct: pnlPct.toFixed(2) + '%', stopLevel: effectiveStop.toFixed(1) + '%', profile: profile.label }); if(!state.stoppedOut)state.stoppedOut={}; state.stoppedOut[ticker]=now; }
         if (state.positionSources) delete state.positionSources[ticker];
+        if (state.positionLadder) delete state.positionLadder[ticker];
         continue;
       }
 
+      // Trailing stop placement — use tightened trail if ladder tranches have been sold
+      const activeTrail = ladder?.tranche2Sold ? profile.trail3 : ladder?.tranche1Sold ? profile.trail2 : profile.trail;
       const openedToday = new Date(pos.created_at||0).toDateString()===new Date().toDateString();
       if (!(await hasTrailingStop(ticker,openOrders))) {
         if (openedToday) console.log(`  [SKIP TRAIL] ${ticker} — opened today, will place tonight`);
-        else await placeTrailingStop(ticker, pos.qty, entry, profile.trail);
+        else await placeTrailingStop(ticker, currentQty, entry, activeTrail);
       }
     }
 
