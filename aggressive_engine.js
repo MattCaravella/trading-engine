@@ -369,6 +369,23 @@ async function runAggressiveCycle(getCandidatesFn) {
 
     saveState(state);
     console.log(`[Aggressive] Cycle complete — new trades: ${newTrades}, total aggressive positions: ${aggressivePositions.length + newTrades}`);
+
+    // Write intraday equity snapshot for aggressive P&L chart
+    try {
+      const unrealizedPnl = aggressivePositions.reduce((s, p) => s + parseFloat(p.unrealized_pl || 0), 0);
+      const snapshot = {
+        ts: Date.now(),
+        equity: aggressiveEquity,
+        deployed: aggressiveInvested,
+        pnl: unrealizedPnl,
+        positions: aggressivePositions.length + newTrades,
+      };
+      const snapshotDir = path.join(__dirname, 'trade_history');
+      if (!fs.existsSync(snapshotDir)) fs.mkdirSync(snapshotDir, { recursive: true });
+      fs.appendFileSync(path.join(snapshotDir, 'aggressive_equity.jsonl'), JSON.stringify(snapshot) + '\n');
+    } catch (snapErr) {
+      console.warn('[Aggressive] Failed to write equity snapshot:', snapErr.message);
+    }
   } catch (err) {
     console.error('[Aggressive] Cycle error:', err.message);
     saveState(state);

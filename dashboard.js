@@ -263,6 +263,28 @@ async function getStatus() {
     }
   } catch {}
 
+  // Today's closed trades from performance ledger
+  let closedToday = [];
+  try {
+    const PERF_LEDGER = path.join(__dirname, 'trade_history/performance_ledger.json');
+    if (fs.existsSync(PERF_LEDGER)) {
+      const ledger = JSON.parse(fs.readFileSync(PERF_LEDGER, 'utf8'));
+      const today = etTime().split(' ')[0]; // approximate today's date
+      const todayISO = new Date().toISOString().slice(0, 10);
+      closedToday = (ledger.trades || []).filter(t => {
+        const exitDate = (t.exitTime || t.exit_time || '').slice(0, 10);
+        return exitDate === todayISO;
+      }).map(t => ({
+        symbol: t.symbol,
+        pnlPct: t.pnlPct || t.pnl_pct || 0,
+        pnlDollar: t.pnlDollar || t.pnl_dollar || 0,
+        exitReason: t.exitReason || t.exit_reason || 'unknown',
+        isAggressive: t.isAggressive || t.is_aggressive || false,
+        holdingHours: t.holdingHours || t.holding_hours || 0,
+      }));
+    }
+  } catch {}
+
   return {
     time: etTime(),
     marketStatus: marketStatus(),
@@ -273,6 +295,7 @@ async function getStatus() {
     lastNewsRun: getLastNewsRun(),
     aggressive,
     apiHealth: { overall: apiHealth.getOverallStatus(), summary: apiHealth.getHealth() },
+    closedToday,
   };
 }
 
@@ -647,6 +670,16 @@ const HTML = `<!DOCTYPE html>
         <tr><td colspan="7" style="text-align:center;color:var(--dim);padding:20px">Loading...</td></tr>
       </tbody>
     </table>
+    <div class="divider" style="margin:8px 0"></div>
+    <div class="panel-title">Closed Today</div>
+    <table>
+      <thead>
+        <tr><th>Symbol</th><th>Engine</th><th>P&amp;L</th><th>P&amp;L $</th><th>Exit</th><th>Held</th></tr>
+      </thead>
+      <tbody id="closed-today-body">
+        <tr><td colspan="6" style="text-align:center;color:var(--dim);padding:12px">No closes today</td></tr>
+      </tbody>
+    </table>
   </div>
 
   <div class="panel">
@@ -934,6 +967,29 @@ async function refresh() {
       }).join('');
     }
 
+    // Closed today
+    const closedBody = document.getElementById('closed-today-body');
+    const closed = data.closedToday || [];
+    if (closed.length === 0) {
+      closedBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:12px">No closes today</td></tr>';
+    } else {
+      closedBody.innerHTML = closed.map(t => {
+        const pnl = parseFloat(t.pnlPct);
+        const up = pnl > 0;
+        const cls = up ? 'pnl-badge pnl-badge-green' : 'pnl-badge pnl-badge-red';
+        const engine = t.isAggressive ? '<span style="color:#ff6d00;font-weight:bold">AGG</span>' : 'Main';
+        const held = t.holdingHours ? Math.round(t.holdingHours) + 'h' : '?';
+        return \`<tr>
+          <td>\${t.symbol}</td>
+          <td>\${engine}</td>
+          <td><span class="\${cls}">\${pnl >= 0 ? '+' : ''}\${pnl.toFixed(2)}%</span></td>
+          <td style="color:\${up?'var(--green)':'var(--red)'}">\${parseFloat(t.pnlDollar) >= 0 ? '+' : ''}$\${fmt(t.pnlDollar)}</td>
+          <td style="color:var(--dim)">\${t.exitReason}</td>
+          <td style="color:var(--dim)">\${held}</td>
+        </tr>\`;
+      }).join('');
+    }
+
     // Activity feed
     const feed = document.getElementById('activity-feed');
     feed.innerHTML = data.scheduler.activityLines.map(line =>
@@ -961,26 +1017,14 @@ refresh();
 
 // ─── P&L Chart ──────────────────────────────────────────────────────────────
 let chartData = [];
-let currentRange = '1M';
+let currentRange = '1D';
+let chartRangeType = 'daily';
 
 function switchChartRange(range, btn) {
   currentRange = range;
   document.querySelectorAll('.chart-tab').forEach(t => t.classList.remove('active'));
   if (btn) btn.classList.add('active');
-  drawChart();
-}
-
-function filterByRange(points, range) {
-  if (!points.length) return points;
-  const now = new Date();
-  let cutoff;
-  if (range === '1D') cutoff = new Date(now - 86400000);
-  else if (range === '1W') cutoff = new Date(now - 7 * 86400000);
-  else if (range === '1M') cutoff = new Date(now - 30 * 86400000);
-  else if (range === '1Y') cutoff = new Date(now - 365 * 86400000);
-  else return points; // ALL
-  const cutStr = cutoff.toISOString().slice(0, 10);
-  return points.filter(p => p.date >= cutStr);
+  loadEquityChart(); // reload data from API with new range
 }
 
 function drawChart() {
@@ -996,7 +1040,7 @@ function drawChart() {
 
   ctx.clearRect(0, 0, W, H);
 
-  let points = filterByRange(chartData, currentRange);
+  let points = chartData;
   if (points.length < 2) {
     ctx.fillStyle = '#556b8a';
     ctx.font = '13px Segoe UI, monospace';
@@ -1013,9 +1057,9 @@ function drawChart() {
   const vals = points.map(p => p.pnlPct);
   let minV = Math.min(...vals, 0);
   let maxV = Math.max(...vals, 0);
-  const range = maxV - minV || 1;
-  minV -= range * 0.08;
-  maxV += range * 0.08;
+  const vRange = maxV - minV || 1;
+  minV -= vRange * 0.08;
+  maxV += vRange * 0.08;
 
   const xScale = cW / (points.length - 1);
   const yScale = cH / (maxV - minV);
@@ -1044,6 +1088,30 @@ function drawChart() {
     ctx.strokeStyle = 'rgba(255,255,255,0.04)';
     ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
     ctx.fillText((v >= 0 ? '+' : '') + v.toFixed(2) + '%', W - 5, y + 3);
+  }
+
+  // X-axis labels
+  ctx.fillStyle = '#556b8a';
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'center';
+  const labelCount = Math.min(points.length, Math.floor(cW / 70));
+  const labelStep = Math.max(1, Math.floor(points.length / labelCount));
+  for (let i = 0; i < points.length; i += labelStep) {
+    const p = points[i];
+    let label = '';
+    if (chartRangeType === 'intraday') {
+      label = p.time || p.date;
+    } else if (chartRangeType === 'hourly') {
+      label = p.time || p.date;
+    } else {
+      // Daily: show "Apr 8" format
+      const d = new Date(p.date + 'T12:00:00');
+      label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+    const x = toX(i);
+    if (x > pad.left + 20 && x < W - pad.right - 20) {
+      ctx.fillText(label, x, H - 4);
+    }
   }
 
   // Gradient fill
@@ -1083,35 +1151,40 @@ function drawChart() {
   // Info text
   const p = points[points.length - 1];
   const sign = p.pnlPct >= 0 ? '+' : '';
+  const periodLabel = chartRangeType === 'intraday' ? points.length + ' points' : chartRangeType === 'hourly' ? points.length + ' hours' : points.length + ' days';
   document.getElementById('chart-info').innerHTML =
     '<span style="color:' + (isUp ? 'var(--green)' : 'var(--red)') + ';font-size:18px;font-weight:bold;">' +
     sign + p.pnlPct.toFixed(2) + '%</span> ' +
     '<span style="color:var(--dim);">($' + sign + p.pnlDollar.toFixed(0) + ')</span> ' +
-    '<span style="color:var(--dim);font-size:10px;">' + points.length + ' days</span>';
+    '<span style="color:var(--dim);font-size:10px;">' + periodLabel + '</span>';
 
-  // Hover crosshair
+  // Hover crosshair — store last hover index, redraw on each move
+  canvas._hoverIdx = -1;
   canvas.onmousemove = function(e) {
     const r = canvas.getBoundingClientRect();
     const mx = e.clientX - r.left;
     const idx = Math.round((mx - pad.left) / xScale);
-    if (idx >= 0 && idx < points.length) {
+    if (idx >= 0 && idx < points.length && idx !== canvas._hoverIdx) {
+      canvas._hoverIdx = idx;
       const pt = points[idx];
       const s = pt.pnlPct >= 0 ? '+' : '';
+      const hoverLabel = pt.time || pt.date;
       document.getElementById('chart-info').innerHTML =
         '<span style="color:' + (pt.pnlPct >= 0 ? 'var(--green)' : 'var(--red)') + ';font-size:18px;font-weight:bold;">' +
         s + pt.pnlPct.toFixed(2) + '%</span> ' +
         '<span style="color:var(--dim);">($' + s + pt.pnlDollar.toFixed(0) + ')</span> ' +
-        '<span style="color:var(--dim);font-size:10px;">' + pt.date + '</span>';
+        '<span style="color:var(--dim);font-size:10px;">' + hoverLabel + '</span>';
     }
   };
-  canvas.onmouseleave = function() { drawChart(); }; // redraw to reset info
+  canvas.onmouseleave = function() { canvas._hoverIdx = -1; drawChart(); };
 }
 
 async function loadEquityChart() {
   try {
-    const res = await fetch('/api/equity-history');
+    const res = await fetch('/api/equity-history?range=' + currentRange);
     const data = await res.json();
     chartData = data.points || [];
+    chartRangeType = data.rangeType || 'daily';
     drawChart();
   } catch {}
 }
@@ -1124,8 +1197,53 @@ window.addEventListener('resize', drawChart);
 </html>`;
 
 // ─── Equity History for P&L Chart ────────────────────────────────────────────
-function getEquityHistory() {
+async function getEquityHistory(range) {
   const INITIAL = 100000;
+
+  // ── 1D: Alpaca portfolio history API — 15-min intraday granularity ──
+  if (range === '1D') {
+    try {
+      const intradayRes = await alpaca('GET', '/account/portfolio/history?period=1D&timeframe=15Min');
+      if (intradayRes && Array.isArray(intradayRes.timestamp) && intradayRes.timestamp.length > 0) {
+        const points = [];
+        for (let i = 0; i < intradayRes.timestamp.length; i++) {
+          const ts = intradayRes.timestamp[i] * 1000; // epoch seconds to ms
+          const d = new Date(ts);
+          const time = d.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true });
+          const eq = intradayRes.equity[i];
+          const pnl = intradayRes.profit_loss[i] || 0;
+          const pnlPct = intradayRes.profit_loss_pct[i] ? intradayRes.profit_loss_pct[i] * 100 : 0;
+          points.push({ date: time, time, equity: eq, pnlPct, pnlDollar: pnl, isIntraday: true });
+        }
+        return { points, initialCapital: INITIAL, rangeType: 'intraday' };
+      }
+    } catch (e) { console.error('[Dashboard] Intraday equity fetch error:', e.message); }
+    // Fall through to daily if intraday fails
+  }
+
+  // ── 1W: Alpaca portfolio history API — hourly granularity ──
+  if (range === '1W') {
+    try {
+      const weekRes = await alpaca('GET', '/account/portfolio/history?period=1W&timeframe=1H');
+      if (weekRes && Array.isArray(weekRes.timestamp) && weekRes.timestamp.length > 0) {
+        const points = [];
+        for (let i = 0; i < weekRes.timestamp.length; i++) {
+          const ts = weekRes.timestamp[i] * 1000;
+          const d = new Date(ts);
+          const dayName = d.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short' });
+          const hour = d.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: true });
+          const time = dayName + ' ' + hour;
+          const eq = weekRes.equity[i];
+          const pnl = weekRes.profit_loss[i] || 0;
+          const pnlPct = weekRes.profit_loss_pct[i] ? weekRes.profit_loss_pct[i] * 100 : 0;
+          points.push({ date: time, time, equity: eq, pnlPct, pnlDollar: pnl, isIntraday: true });
+        }
+        return { points, initialCapital: INITIAL, rangeType: 'hourly' };
+      }
+    } catch (e) { console.error('[Dashboard] Weekly equity fetch error:', e.message); }
+  }
+
+  // ── 1M, 1Y, ALL: Daily snapshots from equity_curve.json / DB ──
   const points = [];
 
   // Load daily snapshots from equity_curve.json or DB
@@ -1158,13 +1276,88 @@ function getEquityHistory() {
   // Sort by date
   points.sort((a, b) => a.date.localeCompare(b.date));
 
+  // Filter by range for daily data
+  if (range === '1M' || range === '1Y') {
+    const now = new Date();
+    const cutoffMs = range === '1M' ? 30 * 86400000 : 365 * 86400000;
+    const cutStr = new Date(now - cutoffMs).toISOString().slice(0, 10);
+    const filtered = points.filter(p => p.date >= cutStr);
+    // Use filtered if we have data, otherwise show all
+    if (filtered.length > 0) {
+      points.length = 0;
+      points.push(...filtered);
+    }
+  }
+
   // Compute P&L % relative to initial capital
   for (const p of points) {
     p.pnlPct = ((p.equity - INITIAL) / INITIAL) * 100;
     p.pnlDollar = p.equity - INITIAL;
   }
 
-  return { points, initialCapital: INITIAL };
+  return { points, initialCapital: INITIAL, rangeType: 'daily' };
+}
+
+// ─── Aggressive Equity History for P&L Chart ────────────────────────────────
+function getAggressiveEquityHistory(range) {
+  const AGG_EQUITY_FILE = path.join(__dirname, 'trade_history/aggressive_equity.jsonl');
+  const points = [];
+
+  try {
+    if (fs.existsSync(AGG_EQUITY_FILE)) {
+      const lines = fs.readFileSync(AGG_EQUITY_FILE, 'utf8').trim().split('\n').filter(l => l.trim());
+      for (const line of lines) {
+        try {
+          const snap = JSON.parse(line);
+          const d = new Date(snap.ts);
+          const dateStr = d.toISOString().slice(0, 10);
+          const time = d.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true });
+          const dayTime = d.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short' }) + ' ' +
+            d.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: true });
+          points.push({
+            ts: snap.ts, dateStr, time, dayTime,
+            equity: snap.equity || 0, pnl: snap.pnl || 0,
+            deployed: snap.deployed || 0, positions: snap.positions || 0,
+          });
+        } catch {}
+      }
+    }
+  } catch {}
+
+  if (points.length === 0) return { points: [], rangeType: 'intraday' };
+
+  // Filter by range
+  const now = Date.now();
+  const today = new Date().toISOString().slice(0, 10);
+  let filtered;
+  let rangeType = 'intraday';
+
+  if (range === '1D') {
+    filtered = points.filter(p => p.dateStr === today);
+    rangeType = 'intraday';
+  } else if (range === '1W') {
+    const weekAgo = now - 7 * 86400000;
+    filtered = points.filter(p => p.ts >= weekAgo);
+    rangeType = 'hourly';
+  } else {
+    filtered = points; // ALL
+    rangeType = points.length > 100 ? 'daily' : 'intraday';
+  }
+
+  if (filtered.length === 0) filtered = points.slice(-50); // fallback
+
+  // Compute P&L % relative to first point in range
+  const baseEquity = filtered[0].equity || 10000;
+  const result = filtered.map(p => ({
+    date: range === '1D' ? p.time : range === '1W' ? p.dayTime : p.dateStr,
+    time: p.time,
+    equity: p.equity,
+    pnlPct: baseEquity > 0 ? ((p.equity - baseEquity) / baseEquity) * 100 : 0,
+    pnlDollar: p.pnl || (p.equity - baseEquity),
+    isIntraday: range === '1D' || range === '1W',
+  }));
+
+  return { points: result, rangeType };
 }
 
 // ─── News Data Fetcher ──────────────────────────────────────────────────────
@@ -1670,6 +1863,14 @@ const AGGRESSIVE_HTML = `<!DOCTYPE html>
 
   .spinner { display:inline-block; width:20px; height:20px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* ── Aggressive Chart ── */
+  .agg-chart-wrap { margin:0 24px 0; background:var(--panel); border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+  .agg-chart-header { display:flex; align-items:center; justify-content:space-between; padding:10px 16px 0 16px; }
+  .agg-chart-title { font-size:11px; letter-spacing:2px; color:var(--dim); text-transform:uppercase; font-weight:600; }
+  .agg-chart-tab { background:none; border:1px solid var(--border); color:var(--dim); padding:4px 12px; font-size:11px; cursor:pointer; border-radius:3px; font-family:inherit; transition:all 0.2s; }
+  .agg-chart-tab:hover { border-color:var(--accent); color:var(--accent); }
+  .agg-chart-tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
 </style>
 </head>
 <body>
@@ -1692,6 +1893,22 @@ const AGGRESSIVE_HTML = `<!DOCTYPE html>
   <div class="stat-card"><div class="label">Win Rate</div><div class="value" id="stat-winrate">-</div></div>
   <div class="stat-card"><div class="label">Active Positions</div><div class="value orange" id="stat-positions">-</div></div>
   <div class="stat-card"><div class="label">Today's Trades</div><div class="value" id="stat-today-trades">-</div></div>
+</div>
+
+<!-- Aggressive P&L Chart -->
+<div class="agg-chart-wrap">
+  <div class="agg-chart-header">
+    <div class="agg-chart-title">Aggressive P&amp;L</div>
+    <div style="display:flex;gap:4px;">
+      <button class="agg-chart-tab active" data-range="1D" onclick="switchAggRange('1D',this)">1D</button>
+      <button class="agg-chart-tab" data-range="1W" onclick="switchAggRange('1W',this)">1W</button>
+      <button class="agg-chart-tab" data-range="ALL" onclick="switchAggRange('ALL',this)">ALL</button>
+    </div>
+  </div>
+  <div style="position:relative;padding:8px 16px 12px;">
+    <div id="agg-chart-info" style="position:absolute;top:8px;left:20px;font-size:12px;color:var(--dim);z-index:2;"></div>
+    <canvas id="agg-pnl-chart" width="1200" height="200" style="width:100%;height:200px;cursor:crosshair;"></canvas>
+  </div>
 </div>
 
 <div class="content">
@@ -1853,7 +2070,7 @@ async function loadData() {
     renderSignals(data.signals || []);
     renderTrades(data.recentTrades || []);
 
-    document.getElementById('last-update').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+    document.getElementById('last-update').textContent = 'Updated: ' + new Date().toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true}) + ' ET';
   } catch(e) {
     document.getElementById('last-update').textContent = 'Error: ' + e.message;
   }
@@ -1862,6 +2079,174 @@ async function loadData() {
 // Initial load + auto-refresh every 10s
 loadData();
 setInterval(loadData, 10000);
+
+// ─── Aggressive P&L Chart ────────────────────────────────────────────────────
+let aggChartData = [];
+let aggCurrentRange = '1D';
+let aggRangeType = 'intraday';
+
+function switchAggRange(range, btn) {
+  aggCurrentRange = range;
+  document.querySelectorAll('.agg-chart-tab').forEach(t => t.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  loadAggChart();
+}
+
+function drawAggChart() {
+  const canvas = document.getElementById('agg-pnl-chart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+
+  ctx.clearRect(0, 0, W, H);
+
+  const points = aggChartData;
+  if (points.length < 2) {
+    ctx.fillStyle = '#556b8a';
+    ctx.font = '13px Segoe UI, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('No aggressive equity data — snapshots accumulate each cycle', W/2, H/2);
+    document.getElementById('agg-chart-info').textContent = '';
+    return;
+  }
+
+  const pad = { top: 25, right: 60, bottom: 25, left: 10 };
+  const cW = W - pad.left - pad.right;
+  const cH = H - pad.top - pad.bottom;
+
+  const vals = points.map(p => p.pnlPct);
+  let minV = Math.min(...vals, 0);
+  let maxV = Math.max(...vals, 0);
+  const vRange = maxV - minV || 1;
+  minV -= vRange * 0.08;
+  maxV += vRange * 0.08;
+
+  const xScale = cW / (points.length - 1);
+  const yScale = cH / (maxV - minV);
+  const toX = i => pad.left + i * xScale;
+  const toY = v => pad.top + (maxV - v) * yScale;
+
+  // Zero line
+  const zeroY = toY(0);
+  ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(pad.left, zeroY);
+  ctx.lineTo(W - pad.right, zeroY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Grid lines
+  ctx.fillStyle = '#556b8a';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'right';
+  const steps = 4;
+  for (let i = 0; i <= steps; i++) {
+    const v = minV + (maxV - minV) * (1 - i / steps);
+    const y = pad.top + (i / steps) * cH;
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    ctx.fillText((v >= 0 ? '+' : '') + v.toFixed(2) + '%', W - 5, y + 3);
+  }
+
+  // X-axis labels
+  ctx.fillStyle = '#556b8a';
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'center';
+  const labelCount = Math.min(points.length, Math.floor(cW / 70));
+  const labelStep = Math.max(1, Math.floor(points.length / labelCount));
+  for (let i = 0; i < points.length; i += labelStep) {
+    const p = points[i];
+    const label = p.time || p.date;
+    const x = toX(i);
+    if (x > pad.left + 20 && x < W - pad.right - 20) {
+      ctx.fillText(label, x, H - 4);
+    }
+  }
+
+  // Gradient fill — orange theme
+  const lastVal = vals[vals.length - 1];
+  const isUp = lastVal >= 0;
+  const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
+  if (isUp) {
+    grad.addColorStop(0, 'rgba(255,109,0,0.30)');
+    grad.addColorStop(1, 'rgba(255,109,0,0.03)');
+  } else {
+    grad.addColorStop(0, 'rgba(255,82,82,0.03)');
+    grad.addColorStop(1, 'rgba(255,82,82,0.30)');
+  }
+  ctx.beginPath();
+  ctx.moveTo(toX(0), zeroY);
+  for (let i = 0; i < points.length; i++) ctx.lineTo(toX(i), toY(vals[i]));
+  ctx.lineTo(toX(points.length - 1), zeroY);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line — orange when up, red when down
+  ctx.beginPath();
+  ctx.moveTo(toX(0), toY(vals[0]));
+  for (let i = 1; i < points.length; i++) ctx.lineTo(toX(i), toY(vals[i]));
+  ctx.strokeStyle = isUp ? '#ff6d00' : '#ff5252';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Current value dot
+  const lastX = toX(points.length - 1), lastY = toY(lastVal);
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
+  ctx.fillStyle = isUp ? '#ff6d00' : '#ff5252';
+  ctx.fill();
+
+  // Info text
+  const p = points[points.length - 1];
+  const sn = p.pnlPct >= 0 ? '+' : '';
+  const periodLabel = aggRangeType === 'intraday' ? points.length + ' snapshots' : points.length + ' points';
+  document.getElementById('agg-chart-info').innerHTML =
+    '<span style="color:' + (isUp ? '#ff6d00' : 'var(--red)') + ';font-size:18px;font-weight:bold;">' +
+    sn + p.pnlPct.toFixed(2) + '%</span> ' +
+    '<span style="color:var(--dim);">($' + sn + p.pnlDollar.toFixed(0) + ')</span> ' +
+    '<span style="color:var(--dim);font-size:10px;">' + periodLabel + '</span>';
+
+  // Hover crosshair
+  canvas._hoverIdx = -1;
+  canvas.onmousemove = function(e) {
+    const r = canvas.getBoundingClientRect();
+    const mx = e.clientX - r.left;
+    const idx = Math.round((mx - pad.left) / xScale);
+    if (idx >= 0 && idx < points.length && idx !== canvas._hoverIdx) {
+      canvas._hoverIdx = idx;
+      const pt = points[idx];
+      const s = pt.pnlPct >= 0 ? '+' : '';
+      const hoverLabel = pt.time || pt.date;
+      document.getElementById('agg-chart-info').innerHTML =
+        '<span style="color:' + (pt.pnlPct >= 0 ? '#ff6d00' : 'var(--red)') + ';font-size:18px;font-weight:bold;">' +
+        s + pt.pnlPct.toFixed(2) + '%</span> ' +
+        '<span style="color:var(--dim);">($' + s + pt.pnlDollar.toFixed(0) + ')</span> ' +
+        '<span style="color:var(--dim);font-size:10px;">' + hoverLabel + '</span>';
+    }
+  };
+  canvas.onmouseleave = function() { canvas._hoverIdx = -1; drawAggChart(); };
+}
+
+async function loadAggChart() {
+  try {
+    const res = await fetch('/api/aggressive/equity-history?range=' + aggCurrentRange);
+    const data = await res.json();
+    aggChartData = data.points || [];
+    aggRangeType = data.rangeType || 'intraday';
+    drawAggChart();
+  } catch {}
+}
+loadAggChart();
+setInterval(loadAggChart, 60000);
+window.addEventListener('resize', drawAggChart);
 </script>
 </body>
 </html>`;
@@ -2080,7 +2465,7 @@ function render() {
   document.getElementById('stat-ok').textContent = okCount;
   document.getElementById('stat-degraded').textContent = degradedCount;
   document.getElementById('stat-down').textContent = downCount;
-  document.getElementById('stat-refreshed').textContent = new Date().toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
+  document.getElementById('stat-refreshed').textContent = new Date().toLocaleTimeString('en-US', { timeZone:'America/New_York', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false }) + ' ET';
 
   const badge = document.getElementById('overall-badge');
   const ov = healthData.overall || 'healthy';
@@ -2170,7 +2555,9 @@ const server = http.createServer(async (req, res) => {
     }
   } else if (req.url.startsWith('/api/equity-history')) {
     try {
-      const data = getEquityHistory();
+      const urlParams = new URL(req.url, 'http://localhost').searchParams;
+      const range = urlParams.get('range') || '1M';
+      const data = await getEquityHistory(range);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(data));
     } catch (e) {
@@ -2287,6 +2674,16 @@ const server = http.createServer(async (req, res) => {
   } else if (req.url === '/api/aggressive') {
     try {
       const data = await getAggressiveData();
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify(data));
+    } catch (e) {
+      res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
+    }
+  } else if (req.url.startsWith('/api/aggressive/equity-history')) {
+    try {
+      const urlParams = new URL(req.url, 'http://localhost').searchParams;
+      const range = urlParams.get('range') || '1D';
+      const data = getAggressiveEquityHistory(range);
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify(data));
     } catch (e) {
