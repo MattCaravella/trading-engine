@@ -1886,13 +1886,28 @@ const AGGRESSIVE_HTML = `<!DOCTYPE html>
   </div>
 </div>
 
-<div class="stats-bar" id="stats-bar">
-  <div class="stat-card"><div class="label">Deployed Capital</div><div class="value orange" id="stat-deployed">-</div></div>
-  <div class="stat-card"><div class="label">Today's P&amp;L</div><div class="value" id="stat-today-pnl">-</div></div>
-  <div class="stat-card"><div class="label">Total P&amp;L</div><div class="value" id="stat-total-pnl">-</div></div>
-  <div class="stat-card"><div class="label">Win Rate</div><div class="value" id="stat-winrate">-</div></div>
-  <div class="stat-card"><div class="label">Active Positions</div><div class="value orange" id="stat-positions">-</div></div>
-  <div class="stat-card"><div class="label">Today's Trades</div><div class="value" id="stat-today-trades">-</div></div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--border);margin-bottom:1px;">
+  <div class="stat-card" style="padding:14px 20px;">
+    <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:10px;font-weight:bold">P&amp;L</div>
+    <div style="display:flex;justify-content:space-around;gap:12px;">
+      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Today</div><div id="stat-today-pnl" style="display:inline-block;padding:3px 12px;border-radius:5px;font-weight:bold;font-size:20px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
+      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Total</div><div id="stat-total-pnl" style="display:inline-block;padding:3px 12px;border-radius:5px;font-weight:bold;font-size:20px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
+    </div>
+  </div>
+  <div class="stat-card" style="padding:14px 20px;">
+    <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:10px;font-weight:bold">Capital</div>
+    <div style="display:flex;justify-content:space-around;gap:12px;">
+      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Deployed</div><div id="stat-deployed" style="display:inline-block;padding:3px 12px;border-radius:5px;font-weight:bold;font-size:20px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:#ff6d00">—</div></div>
+      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Positions</div><div id="stat-positions" style="display:inline-block;padding:3px 12px;border-radius:5px;font-weight:bold;font-size:20px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:#ff6d00">—</div></div>
+    </div>
+  </div>
+  <div class="stat-card" style="padding:14px 20px;">
+    <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:10px;font-weight:bold">Performance</div>
+    <div style="display:flex;justify-content:space-around;gap:12px;">
+      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Win Rate</div><div id="stat-winrate" style="display:inline-block;padding:3px 12px;border-radius:5px;font-weight:bold;font-size:20px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
+      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Trades Today</div><div id="stat-today-trades" style="display:inline-block;padding:3px 12px;border-radius:5px;font-weight:bold;font-size:20px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
+    </div>
+  </div>
 </div>
 
 <!-- Aggressive P&L Chart -->
@@ -2052,17 +2067,22 @@ async function loadData() {
     // Allocation
     document.getElementById('alloc-display').textContent = '$' + (data.allocation||10000).toLocaleString() + ' (10%)';
 
-    // Stats bar
+    // Stats bar — with dynamic coloring matching main dashboard style
     document.getElementById('stat-deployed').textContent = '$' + (data.deployed||0).toLocaleString();
+
     const todayPnl = data.todayPnl || 0;
     const todayEl = document.getElementById('stat-today-pnl');
     todayEl.textContent = sign(todayPnl) + fmtDollar(todayPnl);
-    todayEl.className = 'value ' + (todayPnl >= 0 ? 'green' : 'red');
+    todayEl.style.color = todayPnl >= 0 ? 'var(--green)' : 'var(--red)';
+    todayEl.style.borderColor = todayPnl >= 0 ? 'rgba(0,230,118,0.3)' : 'rgba(255,82,82,0.3)';
+    todayEl.style.background = todayPnl >= 0 ? 'rgba(0,230,118,0.1)' : 'rgba(255,82,82,0.1)';
 
     const totalPnl = data.totalPnl || 0;
     const totalEl = document.getElementById('stat-total-pnl');
     totalEl.textContent = sign(totalPnl) + fmtDollar(totalPnl);
-    totalEl.className = 'value ' + (totalPnl >= 0 ? 'green' : 'red');
+    totalEl.style.color = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+    totalEl.style.borderColor = totalPnl >= 0 ? 'rgba(0,230,118,0.3)' : 'rgba(255,82,82,0.3)';
+    totalEl.style.background = totalPnl >= 0 ? 'rgba(0,230,118,0.1)' : 'rgba(255,82,82,0.1)';
 
     const wr = data.winRate || 0;
     const wrEl = document.getElementById('stat-winrate');
