@@ -14,6 +14,8 @@ fs.readFileSync(path.join(__dirname, '.env'), 'utf8').split('\n').forEach(line =
   if (i > 0) { const k = line.slice(0, i).trim(), v = line.slice(i + 1).trim(); if (k) process.env[k] = v; }
 });
 
+const apiHealth = require('./api_health');
+
 const ALPACA_KEY    = process.env.ALPACA_API_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY;
 const ALPACA_URL    = process.env.ALPACA_BASE_URL;
@@ -270,6 +272,7 @@ async function getStatus() {
     indices,
     lastNewsRun: getLastNewsRun(),
     aggressive,
+    apiHealth: { overall: apiHealth.getOverallStatus(), summary: apiHealth.getHealth() },
   };
 }
 
@@ -471,7 +474,9 @@ const HTML = `<!DOCTYPE html>
   </div>
   <div style="display:flex;align-items:center;gap:12px;">
     <span class="halt-badge" id="halt-badge" title="Click to resume scheduler">&#9208; SCHEDULER HALTED</span>
+    <div id="api-health-dot" style="width:10px;height:10px;border-radius:50%;background:#00e676;display:inline-block;margin-right:2px;box-shadow:0 0 8px #00e676;" title="All APIs healthy"></div>
     <button onclick="window.open('/news','_blank','width=1200,height=800')" style="padding:7px 18px;background:var(--accent);border:none;color:#fff;border-radius:5px;cursor:pointer;font-weight:bold;font-size:13px;letter-spacing:0.5px;transition:background 0.2s;" onmouseover="this.style.background='#448aff'" onmouseout="this.style.background='var(--accent)'">News</button>
+    <button onclick="window.open('/api-health','_blank','width=1200,height=800')" style="padding:7px 18px;background:#2196f3;border:none;color:#fff;border-radius:5px;cursor:pointer;font-weight:bold;font-size:13px;letter-spacing:0.5px;transition:background 0.2s;" onmouseover="this.style.background='#42a5f5'" onmouseout="this.style.background='#2196f3'">API Health</button>
     <button onclick="window.open('/aggressive','_blank','width=1400,height=900')" style="padding:7px 18px;background:#ff6d00;border:none;color:#fff;border-radius:5px;cursor:pointer;font-weight:bold;font-size:13px;letter-spacing:0.5px;transition:background 0.2s;" onmouseover="this.style.background='#ff9100'" onmouseout="this.style.background='#ff6d00'">Aggressive</button>
     <div class="emergency-wrap" id="emergency-wrap">
       <button id="emergency-btn" onclick="toggleEmergencyMenu()" style="padding:7px 18px;background:var(--red);border:2px solid #ff1744;color:#fff;border-radius:5px;cursor:pointer;font-weight:bold;font-size:13px;letter-spacing:1px;transition:all 0.2s;text-transform:uppercase;box-shadow:0 0 12px rgba(255,23,68,0.4);" onmouseover="this.style.background='#ff1744';this.style.boxShadow='0 0 20px rgba(255,23,68,0.7)'" onmouseout="this.style.background='var(--red)';this.style.boxShadow='0 0 12px rgba(255,23,68,0.4)'">&#9888; EMERGENCY &#9660;</button>
@@ -879,6 +884,15 @@ async function refresh() {
     } else {
       setDot('dot-aggressive', 'yellow');
       document.getElementById('status-aggressive').textContent = 'No data';
+    }
+
+    // API Health dot
+    if (data.apiHealth) {
+      const dot = document.getElementById('api-health-dot');
+      const ov = data.apiHealth.overall;
+      if (ov === 'healthy') { dot.style.background = '#00e676'; dot.style.boxShadow = '0 0 8px #00e676'; dot.title = 'All APIs healthy'; }
+      else if (ov === 'degraded') { dot.style.background = '#ffca28'; dot.style.boxShadow = '0 0 8px #ffca28'; dot.title = 'Some APIs degraded'; }
+      else { dot.style.background = '#ff5252'; dot.style.boxShadow = '0 0 8px #ff5252'; dot.title = 'APIs down — click API Health for details'; }
     }
 
     // Countdown
@@ -1852,6 +1866,295 @@ setInterval(loadData, 10000);
 </body>
 </html>`;
 
+// ─── API Health Page HTML ───────────────────────────────────────────────────
+const API_HEALTH_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>API Health Monitor — Algo Trader</title>
+<style>
+  :root { --bg:#060b11; --panel:#0e1824; --border:#1e3050; --accent:#2979ff; --green:#00e676; --red:#ff5252; --yellow:#ffca28; --text:#ddeeff; --dim:#556b8a; --bright:#ffffff; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI','Courier New',monospace; font-size:13px; }
+
+  .top-bar { background:var(--panel); border-bottom:1px solid var(--border); padding:14px 24px; display:flex; align-items:center; justify-content:space-between; }
+  .top-bar h1 { font-size:16px; color:var(--bright); font-weight:700; letter-spacing:1px; }
+  .overall-badge { padding:5px 14px; border-radius:4px; font-size:12px; font-weight:bold; letter-spacing:1px; text-transform:uppercase; }
+  .badge-healthy  { background:rgba(0,230,118,0.15); color:var(--green); border:1px solid rgba(0,230,118,0.4); }
+  .badge-degraded { background:rgba(255,202,40,0.15); color:var(--yellow); border:1px solid rgba(255,202,40,0.4); }
+  .badge-critical { background:rgba(255,82,82,0.15); color:var(--red); border:1px solid rgba(255,82,82,0.4); }
+  .btn { padding:6px 14px; border:none; border-radius:4px; cursor:pointer; font-size:12px; font-weight:bold; transition:opacity 0.2s; }
+  .btn:hover { opacity:0.85; }
+  .btn-accent { background:var(--accent); color:#fff; }
+
+  .stats-bar { display:flex; gap:12px; padding:12px 24px; flex-wrap:wrap; }
+  .stat-card { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:12px 18px; min-width:130px; }
+  .stat-card .label { color:var(--dim); font-size:10px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
+  .stat-card .value { font-size:22px; font-weight:bold; color:var(--bright); }
+  .stat-card .value.green { color:var(--green); }
+  .stat-card .value.red { color:var(--red); }
+  .stat-card .value.yellow { color:var(--yellow); }
+
+  .table-wrap { padding:12px 24px; }
+  table { width:100%; border-collapse:collapse; background:var(--panel); border-radius:6px; overflow:hidden; border:1px solid var(--border); }
+  th { font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; padding:10px 12px; text-align:left; border-bottom:1px solid var(--border); font-weight:600; background:rgba(0,0,0,0.2); cursor:pointer; user-select:none; white-space:nowrap; }
+  th:hover { color:var(--accent); }
+  th .sort-arrow { margin-left:4px; font-size:9px; }
+  td { padding:8px 12px; text-align:left; border-bottom:1px solid rgba(30,48,80,0.5); font-size:13px; color:var(--text); font-variant-numeric:tabular-nums; }
+  tr:hover td { background:rgba(41,121,255,0.05); }
+  tr.status-down td { background:rgba(255,82,82,0.04); }
+  tr.status-degraded td { background:rgba(255,202,40,0.03); }
+
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px; flex-shrink:0; }
+  .dot-green  { background:var(--green); box-shadow:0 0 6px var(--green); }
+  .dot-red    { background:var(--red);   box-shadow:0 0 6px var(--red); }
+  .dot-yellow { background:var(--yellow);box-shadow:0 0 6px var(--yellow); }
+  .dot-gray   { background:#3a4a5a; }
+
+  .api-name { font-weight:600; color:var(--bright); }
+  .provider { color:var(--dim); font-size:12px; }
+  .error-msg { max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--red); font-size:11px; }
+  .rate-good { color:var(--green); font-weight:bold; }
+  .rate-warn { color:var(--yellow); font-weight:bold; }
+  .rate-bad  { color:var(--red); font-weight:bold; }
+  .time-ok   { color:var(--text); }
+  .time-old  { color:var(--yellow); }
+  .time-stale { color:var(--red); }
+  .never     { color:var(--dim); font-style:italic; }
+
+  .auto-refresh { color:var(--dim); font-size:11px; }
+  .loading { text-align:center; padding:60px; color:var(--dim); }
+
+  ::-webkit-scrollbar { width:6px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <div style="display:flex;align-items:center;gap:16px;">
+    <h1>API Health Monitor</h1>
+    <span class="overall-badge badge-healthy" id="overall-badge">LOADING</span>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center;">
+    <span class="auto-refresh" id="refresh-info">Auto-refresh: 30s</span>
+    <button class="btn btn-accent" onclick="loadHealth()">Refresh Now</button>
+  </div>
+</div>
+
+<div class="stats-bar" id="stats-bar">
+  <div class="stat-card"><div class="label">Total APIs</div><div class="value" id="stat-total">-</div></div>
+  <div class="stat-card"><div class="label">Healthy</div><div class="value green" id="stat-ok">-</div></div>
+  <div class="stat-card"><div class="label">Degraded</div><div class="value yellow" id="stat-degraded">-</div></div>
+  <div class="stat-card"><div class="label">Down</div><div class="value red" id="stat-down">-</div></div>
+  <div class="stat-card"><div class="label">Last Refresh</div><div class="value" id="stat-refreshed" style="font-size:14px;">-</div></div>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th data-sort="status">Status <span class="sort-arrow"></span></th>
+        <th data-sort="name">API Name <span class="sort-arrow"></span></th>
+        <th data-sort="provider">Provider <span class="sort-arrow"></span></th>
+        <th data-sort="lastSuccess">Last Success <span class="sort-arrow"></span></th>
+        <th data-sort="lastError">Last Error <span class="sort-arrow"></span></th>
+        <th data-sort="errorMsg">Last Error Message <span class="sort-arrow"></span></th>
+        <th data-sort="rate">Success Rate <span class="sort-arrow"></span></th>
+        <th data-sort="dataCount">Data Count <span class="sort-arrow"></span></th>
+        <th data-sort="totalCalls">Total Calls <span class="sort-arrow"></span></th>
+      </tr>
+    </thead>
+    <tbody id="health-body">
+      <tr><td colspan="9" class="loading">Loading API health data...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+const API_PROVIDERS = {
+  alpaca_trading: 'Alpaca', alpaca_data: 'Alpaca',
+  quiver_congress: 'QuiverQuant', quiver_govcontracts: 'QuiverQuant',
+  quiver_lobbying: 'QuiverQuant', quiver_offexchange: 'QuiverQuant',
+  quiver_shortvol: 'QuiverQuant', quiver_wsb: 'QuiverQuant',
+  quiver_insiders: 'QuiverQuant', quiver_flights: 'QuiverQuant',
+  alphavantage_sector: 'Alpha Vantage', alphavantage_news: 'Alpha Vantage',
+  alphavantage_earnings: 'Alpha Vantage',
+  finnhub_news: 'Finnhub', finnhub_earnings: 'Finnhub',
+  yahoo_vix: 'Yahoo Finance',
+  sec_edgar: 'SEC EDGAR',
+  google_trends: 'Google Trends',
+  rss_yahoo: 'RSS Feed', rss_marketwatch: 'RSS Feed',
+  rss_cnbc: 'RSS Feed', rss_seekingalpha: 'RSS Feed',
+  rss_reuters: 'RSS Feed',
+};
+
+let healthData = {};
+let sortCol = 'status';
+let sortDir = 1; // 1 = asc (errors first), -1 = desc
+
+function timeAgo(isoStr) {
+  if (!isoStr) return null;
+  const ms = Date.now() - new Date(isoStr).getTime();
+  if (ms < 0) return 'just now';
+  if (ms < 60000) return Math.floor(ms/1000) + 's ago';
+  if (ms < 3600000) return Math.floor(ms/60000) + 'm ago';
+  if (ms < 86400000) return Math.floor(ms/3600000) + 'h ago';
+  return Math.floor(ms/86400000) + 'd ago';
+}
+
+function timeClass(isoStr) {
+  if (!isoStr) return 'never';
+  const ms = Date.now() - new Date(isoStr).getTime();
+  if (ms < 3600000) return 'time-ok';
+  if (ms < 86400000) return 'time-old';
+  return 'time-stale';
+}
+
+function statusOrder(s) {
+  if (s === 'down') return 0;
+  if (s === 'degraded') return 1;
+  return 2;
+}
+
+function sortData(rows) {
+  return rows.sort((a, b) => {
+    let va, vb;
+    switch (sortCol) {
+      case 'status':
+        va = statusOrder(a.status); vb = statusOrder(b.status);
+        break;
+      case 'name':
+        va = a.name.toLowerCase(); vb = b.name.toLowerCase();
+        return sortDir * va.localeCompare(vb);
+      case 'provider':
+        va = (API_PROVIDERS[a.name] || '').toLowerCase(); vb = (API_PROVIDERS[b.name] || '').toLowerCase();
+        return sortDir * va.localeCompare(vb);
+      case 'lastSuccess':
+        va = a.lastSuccess ? new Date(a.lastSuccess).getTime() : 0;
+        vb = b.lastSuccess ? new Date(b.lastSuccess).getTime() : 0;
+        break;
+      case 'lastError':
+        va = a.lastError ? new Date(a.lastError).getTime() : 0;
+        vb = b.lastError ? new Date(b.lastError).getTime() : 0;
+        break;
+      case 'rate':
+        va = a.successCount + a.errorCount > 0 ? a.successCount / (a.successCount + a.errorCount) : 1;
+        vb = b.successCount + b.errorCount > 0 ? b.successCount / (b.successCount + b.errorCount) : 1;
+        break;
+      case 'dataCount':
+        va = a.lastDataCount || 0; vb = b.lastDataCount || 0;
+        break;
+      case 'totalCalls':
+        va = (a.successCount || 0) + (a.errorCount || 0);
+        vb = (b.successCount || 0) + (b.errorCount || 0);
+        break;
+      default:
+        va = statusOrder(a.status); vb = statusOrder(b.status);
+    }
+    if (va < vb) return -sortDir;
+    if (va > vb) return sortDir;
+    // Secondary sort: errors first, then by last success desc
+    if (sortCol !== 'status') return 0;
+    const sa = a.lastSuccess ? new Date(a.lastSuccess).getTime() : 0;
+    const sb = b.lastSuccess ? new Date(b.lastSuccess).getTime() : 0;
+    return sb - sa;
+  });
+}
+
+function render() {
+  const apis = healthData.apis || {};
+  const rows = Object.entries(apis).map(([name, entry]) => ({ name, ...entry }));
+  const sorted = sortData(rows);
+
+  let okCount = 0, degradedCount = 0, downCount = 0;
+  for (const r of rows) {
+    if (r.status === 'ok') okCount++;
+    else if (r.status === 'degraded') degradedCount++;
+    else downCount++;
+  }
+
+  document.getElementById('stat-total').textContent = rows.length;
+  document.getElementById('stat-ok').textContent = okCount;
+  document.getElementById('stat-degraded').textContent = degradedCount;
+  document.getElementById('stat-down').textContent = downCount;
+  document.getElementById('stat-refreshed').textContent = new Date().toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
+
+  const badge = document.getElementById('overall-badge');
+  const ov = healthData.overall || 'healthy';
+  badge.textContent = ov.toUpperCase();
+  badge.className = 'overall-badge ' + (ov === 'healthy' ? 'badge-healthy' : ov === 'degraded' ? 'badge-degraded' : 'badge-critical');
+
+  const tbody = document.getElementById('health-body');
+  if (sorted.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" class="loading">No API data yet</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = sorted.map(r => {
+    const dotClass = r.status === 'ok' ? 'dot-green' : r.status === 'degraded' ? 'dot-yellow' : r.status === 'down' ? 'dot-red' : 'dot-gray';
+    const rowClass = r.status === 'down' ? 'status-down' : r.status === 'degraded' ? 'status-degraded' : '';
+    const provider = API_PROVIDERS[r.name] || 'Unknown';
+    const total = (r.successCount || 0) + (r.errorCount || 0);
+    const rate = total > 0 ? (r.successCount / total * 100) : 100;
+    const rateClass = rate >= 90 ? 'rate-good' : rate >= 50 ? 'rate-warn' : 'rate-bad';
+    const rateStr = total > 0 ? rate.toFixed(1) + '%' : '-';
+
+    const successAgo = r.lastSuccess ? timeAgo(r.lastSuccess) : null;
+    const errorAgo = r.lastError ? timeAgo(r.lastError) : null;
+    const errMsg = r.lastErrorMsg ? r.lastErrorMsg.slice(0, 80) : '';
+
+    const displayName = r.name.replace(/_/g, ' ').replace(/\\b\\w/g, c => c.toUpperCase()).replace(/Rss /,'RSS ').replace(/Wsb/,'WSB').replace(/Vix/,'VIX').replace(/Sec /,'SEC ');
+
+    return '<tr class="' + rowClass + '">'
+      + '<td><span class="dot ' + dotClass + '"></span>' + r.status.toUpperCase() + '</td>'
+      + '<td class="api-name">' + displayName + '</td>'
+      + '<td class="provider">' + provider + '</td>'
+      + '<td class="' + (successAgo ? timeClass(r.lastSuccess) : 'never') + '">' + (successAgo || 'Never') + '</td>'
+      + '<td class="' + (errorAgo ? timeClass(r.lastError) : 'never') + '">' + (errorAgo || 'Never') + '</td>'
+      + '<td class="error-msg" title="' + errMsg.replace(/"/g, '&quot;') + '">' + (errMsg || '-') + '</td>'
+      + '<td class="' + rateClass + '">' + rateStr + '</td>'
+      + '<td>' + (r.lastDataCount || 0) + '</td>'
+      + '<td>' + total + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+// Column sorting
+document.querySelector('thead').addEventListener('click', function(e) {
+  const th = e.target.closest('th');
+  if (!th || !th.dataset.sort) return;
+  if (sortCol === th.dataset.sort) {
+    sortDir *= -1;
+  } else {
+    sortCol = th.dataset.sort;
+    sortDir = sortCol === 'status' ? 1 : -1;
+  }
+  // Update sort arrows
+  document.querySelectorAll('th .sort-arrow').forEach(s => s.textContent = '');
+  th.querySelector('.sort-arrow').textContent = sortDir === 1 ? ' \\u25B2' : ' \\u25BC';
+  render();
+});
+
+async function loadHealth() {
+  try {
+    const res = await fetch('/api/api-health');
+    healthData = await res.json();
+    render();
+  } catch (e) {
+    document.getElementById('health-body').innerHTML = '<tr><td colspan="9" class="loading" style="color:var(--red)">Failed to load: ' + e.message + '</td></tr>';
+  }
+}
+
+loadHealth();
+setInterval(loadHealth, 30000);
+</script>
+
+</body>
+</html>`;
+
 // ─── Server ─────────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   if (req.url === '/') {
@@ -2003,6 +2306,17 @@ const server = http.createServer(async (req, res) => {
   } else if (req.url === '/news') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(NEWS_HTML);
+  } else if (req.url === '/api/api-health') {
+    try {
+      const data = { overall: apiHealth.getOverallStatus(), apis: apiHealth.getHealth(), timestamp: new Date().toISOString() };
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify(data));
+    } catch (e) {
+      res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
+    }
+  } else if (req.url === '/api-health') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(API_HEALTH_HTML);
   } else {
     res.writeHead(404); res.end('Not found');
   }

@@ -168,8 +168,11 @@ async function processClosedTrades(closedOrders) {
           if (data.id === order.id && data.engine_reason) {
             const reason = data.engine_reason;
             if (reason.includes('Profit target') || reason.includes('profit')) exitReason = 'profit_target';
-            else if (reason.includes('Hard stop') || reason.includes('Stop') || reason.includes('stop')) exitReason = 'hard_stop';
+            else if (reason.includes('Hard stop') || reason.includes('hard stop') || reason.includes('Stop (')) exitReason = 'hard_stop';
+            else if (reason.includes('Max hold') || reason.includes('expired')) exitReason = 'time_exit';
             else if (reason.includes('RSI cover') || reason.includes('oversold')) exitReason = 'rsi_cover';
+            else if (reason.includes('Ladder T1')) exitReason = 'ladder_t1';
+            else if (reason.includes('Ladder T2')) exitReason = 'ladder_t2';
             break;
           }
         } catch {}
@@ -229,6 +232,15 @@ async function processClosedTrades(closedOrders) {
       holdingHours = Math.round((new Date(exitTime) - new Date(entryTime)) / 3600000 * 10) / 10;
     }
 
+    // Detect if this was an aggressive engine trade
+    const isAggressive = (entryReason || '').includes('AGGRESSIVE:') || (exitReason || '').includes('AGGRESSIVE');
+    // Extract aggressive source from reason (e.g., "AGGRESSIVE: Score 80/100 [short_squeeze]")
+    if (isAggressive && entrySources.length === 0) {
+      const srcMatch = (entryReason || '').match(/\[([^\]]+)\]/);
+      if (srcMatch) entrySources = srcMatch[1].split('+');
+      else entrySources = ['aggressive'];
+    }
+
     const record = {
       symbol,
       entryPrice,
@@ -245,6 +257,7 @@ async function processClosedTrades(closedOrders) {
       exitTime,
       orderId: order.id,
       isShort: isShort || false,
+      isAggressive: isAggressive || false,
     };
 
     ledger.trades.push(record);

@@ -7,6 +7,8 @@ fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
   if (key && rest.length) process.env[key.trim()] = rest.join('=').trim();
 });
 
+const { recordSuccess, recordError } = require('../api_health');
+
 const DATA_BASE = 'https://data.alpaca.markets/v2';
 const HEADERS   = { 'APCA-API-KEY-ID': process.env.ALPACA_API_KEY, 'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY };
 const cache     = new Map();
@@ -17,11 +19,18 @@ async function getBars(symbol, days = 200) {
   const cached = cache.get(key);
   if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
   const start  = new Date(Date.now() - days * 86400000).toISOString().slice(0,10);
-  const res    = await fetch(`${DATA_BASE}/stocks/${symbol}/bars?timeframe=1Day&start=${start}&limit=${days}&feed=iex`, { headers: HEADERS });
-  const json   = await res.json();
-  if (!json.bars) throw new Error(`No bars for ${symbol}`);
+  let res, json;
+  try {
+    res    = await fetch(`${DATA_BASE}/stocks/${symbol}/bars?timeframe=1Day&start=${start}&limit=${days}&feed=iex`, { headers: HEADERS });
+    json   = await res.json();
+  } catch (e) {
+    recordError('alpaca_data', e.message);
+    throw e;
+  }
+  if (!json.bars) { recordError('alpaca_data', `No bars for ${symbol}`); throw new Error(`No bars for ${symbol}`); }
   const bars   = json.bars.map(b => ({ t:b.t, o:b.o, h:b.h, l:b.l, c:b.c, v:b.v }));
   cache.set(key, { ts: Date.now(), data: bars });
+  recordSuccess('alpaca_data', bars.length);
   return bars;
 }
 
@@ -80,8 +89,11 @@ async function getVIX() {
   try {
     const res  = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=5d', { headers: {'User-Agent':'Mozilla/5.0'} });
     const json = await res.json();
-    return parseFloat(json?.chart?.result?.[0]?.meta?.regularMarketPrice) || null;
-  } catch { return null; }
+    const vix = parseFloat(json?.chart?.result?.[0]?.meta?.regularMarketPrice) || null;
+    if (vix) recordSuccess('yahoo_vix', 1);
+    else recordError('yahoo_vix', 'No VIX value in response');
+    return vix;
+  } catch (e) { recordError('yahoo_vix', e.message); return null; }
 }
 
 function adx(bars, period = 14) {

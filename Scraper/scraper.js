@@ -26,6 +26,7 @@ if (fs.existsSync(envPath)) {
   }
 }
 
+const { recordSuccess, recordError } = require('../api_health');
 const { UNIVERSE } = require('../data/universe');
 
 // Build a Set for fast ticker lookup
@@ -164,10 +165,11 @@ const RSS_FEEDS = [
 ];
 
 async function fetchRSS(feed) {
+  const apiName = 'rss_' + feed.name;
   try {
     const xml = await httpGet(feed.url);
     const items = parseXmlItems(xml);
-    return items.map(item => {
+    const articles = items.map(item => {
       const text = `${item.title} ${item.description}`;
       return {
         title: item.title || 'Untitled',
@@ -179,8 +181,11 @@ async function fetchRSS(feed) {
         rawSentiment: null,
       };
     }).filter(a => a.url);  // skip articles without URLs
+    recordSuccess(apiName, articles.length);
+    return articles;
   } catch (err) {
     console.warn(`  [scraper] RSS ${feed.name} failed: ${err.message}`);
+    recordError(apiName, err.message);
     return [];
   }
 }
@@ -206,9 +211,9 @@ async function fetchFinnhubGeneral() {
   try {
     const url = `https://finnhub.io/api/v1/news?category=general&token=${key}`;
     const data = JSON.parse(await httpGet(url));
-    if (!Array.isArray(data)) return [];
+    if (!Array.isArray(data)) { recordError('finnhub_news', 'Response is not an array'); return []; }
 
-    return data.map(item => {
+    const articles = data.map(item => {
       const text = `${item.headline || ''} ${item.summary || ''}`;
       return {
         title: item.headline || 'Untitled',
@@ -220,8 +225,11 @@ async function fetchFinnhubGeneral() {
         rawSentiment: null,
       };
     }).filter(a => a.url);
+    recordSuccess('finnhub_news', articles.length);
+    return articles;
   } catch (err) {
     console.warn(`  [scraper] Finnhub general failed: ${err.message}`);
+    recordError('finnhub_news', err.message);
     return [];
   }
 }
@@ -270,7 +278,7 @@ async function fetchAlphaVantageNews(tickers) {
     const data = JSON.parse(await httpGet(url));
     if (!data.feed || !Array.isArray(data.feed)) return [];
 
-    return data.feed.map(item => {
+    const articles = data.feed.map(item => {
       // Extract overall sentiment score (-1 to 1)
       const sentimentScore = parseFloat(item.overall_sentiment_score) || null;
 
@@ -291,8 +299,11 @@ async function fetchAlphaVantageNews(tickers) {
         rawSentiment: sentimentScore,
       };
     }).filter(a => a.url);
+    recordSuccess('alphavantage_news', articles.length);
+    return articles;
   } catch (err) {
     console.warn(`  [scraper] Alpha Vantage News failed: ${err.message}`);
+    recordError('alphavantage_news', err.message);
     return [];
   }
 }

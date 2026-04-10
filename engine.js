@@ -9,6 +9,7 @@ const { tracker } = require('./signal_lifecycle');
 const { isSystemHealthy } = require('./signal_cache');
 const { isStrategyKilled } = require('./strategy_calibrator');
 const { criticalAlert, warningAlert, infoAlert } = require('./alerts');
+const { recordSuccess, recordError } = require('./api_health');
 
 const envPath = path.join(__dirname, '.env');
 fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
@@ -212,7 +213,8 @@ async function placeBuy(ticker, reason, equity, riskMaxPct) {
 
   const qty   = await calcQty(ticker, equity, riskMaxPct);
   const order = await alpaca('POST','/orders',{ symbol:ticker, qty:String(qty), side:'buy', type:'market', time_in_force:'day' });
-  if (!order.id) { console.error(`  [BUY FAILED] ${ticker}:`, JSON.stringify(order)); return null; }
+  if (!order.id) { console.error(`  [BUY FAILED] ${ticker}:`, JSON.stringify(order)); recordError('alpaca_trading', `Buy failed for ${ticker}: ${JSON.stringify(order).slice(0,200)}`); return null; }
+  recordSuccess('alpaca_trading', 1);
   recentOrders.set(ticker, Date.now()); // mark as recently ordered
   logTrade({...order, engine_reason:reason});
   console.log(`  [BUY]  ${ticker} x${qty} — ${reason}`);

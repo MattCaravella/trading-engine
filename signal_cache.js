@@ -14,6 +14,22 @@ const news_sentiment = require('./monitors/news_sentiment');
 const short_entry   = require('./strategies/short_entry');
 const { aggregateByTicker } = require('./signals');
 const { criticalAlert } = require('./alerts');
+const { recordSuccess, recordError } = require('./api_health');
+
+// Map source names to API health tracker names
+const SOURCE_TO_API = {
+  congress: 'quiver_congress', govcontracts: 'quiver_govcontracts',
+  lobbying: 'quiver_lobbying', offexchange: 'quiver_offexchange',
+  insider_buying: 'quiver_insiders', trending: 'quiver_wsb',
+  techsector: 'alphavantage_sector', news_sentiment: 'multiple',
+  bollinger: 'alpaca_data', ma_crossover: 'alpaca_data',
+  relative_value: 'alpaca_data', downtrend: 'alpaca_data',
+  flights: 'quiver_flights', short_entry: 'alpaca_data',
+  gap_and_go: 'alpaca_data', breakout_52wk: 'alpaca_data',
+  short_squeeze: 'quiver_offexchange', pead: 'finnhub_earnings',
+  volume_anomaly: 'alpaca_data', wsb_velocity: 'quiver_wsb',
+  sec_8k: 'sec_edgar', google_trends: 'google_trends',
+};
 
 // ─── Aggressive Sources (graceful fallback if files don't exist yet) ────────
 let gap_and_go, breakout_52wk, short_squeeze, pead, volume_anomaly, wsb_velocity, sec_8k, google_trends;
@@ -57,8 +73,9 @@ async function refreshSlow() {
       const s = await mod.getSignals();
       for (const sig of s) signals.push({ ...sig, source: name, _generatedAt: ts });
       console.log(`  [${name}] ${s.length} signal(s)`);
+      const apiName = SOURCE_TO_API[name]; if (apiName && apiName !== 'multiple') recordSuccess(apiName, s.length);
     }
-    catch(e) { fails++; console.warn(`  [${name}] failed: ${e.message}`); }
+    catch(e) { fails++; console.warn(`  [${name}] failed: ${e.message}`); const apiName = SOURCE_TO_API[name]; if (apiName && apiName !== 'multiple') recordError(apiName, e.message); }
   }));
   healthStatus.slowFails = fails;
   healthStatus.slowTotal = total;
@@ -78,8 +95,9 @@ async function refreshFast() {
       const s = await mod.getSignals();
       for (const sig of s) signals.push({ ...sig, source: name, _generatedAt: ts });
       console.log(`  [${name}] ${s.length} signal(s)`);
+      const apiName = SOURCE_TO_API[name]; if (apiName && apiName !== 'multiple') recordSuccess(apiName, s.length);
     }
-    catch(e) { fails++; console.warn(`  [${name}] failed: ${e.message}`); }
+    catch(e) { fails++; console.warn(`  [${name}] failed: ${e.message}`); const apiName = SOURCE_TO_API[name]; if (apiName && apiName !== 'multiple') recordError(apiName, e.message); }
   }));
   healthStatus.fastFails = fails;
   healthStatus.fastTotal = total;
@@ -99,8 +117,9 @@ async function refreshNews() {
       const s = await mod.getSignals();
       for (const sig of s) signals.push({ ...sig, source: name, _generatedAt: ts });
       console.log(`  [${name}] ${s.length} signal(s)`);
+      const apiName = SOURCE_TO_API[name]; if (apiName && apiName !== 'multiple') recordSuccess(apiName, s.length);
     }
-    catch(e) { fails++; console.warn(`  [${name}] failed: ${e.message}`); }
+    catch(e) { fails++; console.warn(`  [${name}] failed: ${e.message}`); const apiName = SOURCE_TO_API[name]; if (apiName && apiName !== 'multiple') recordError(apiName, e.message); }
   }));
   newsCache = { signals, updatedAt: new Date() };
   console.log(`[Cache] NEWS updated — ${signals.length} signals${fails > 0 ? ` (${fails}/${total} sources failed)` : ''}`);
@@ -116,8 +135,9 @@ async function refreshShort() {
     try {
       const s = await mod.getSignals();
       for (const sig of s) signals.push({ ...sig, source: name, _generatedAt: ts });
+      const apiName = SOURCE_TO_API[name]; if (apiName && apiName !== 'multiple') recordSuccess(apiName, s.length);
     }
-    catch (e) { fails++; console.warn(`  [${name}] failed: ${e.message}`); }
+    catch (e) { fails++; console.warn(`  [${name}] failed: ${e.message}`); const apiName = SOURCE_TO_API[name]; if (apiName && apiName !== 'multiple') recordError(apiName, e.message); }
   }));
   shortCache = { signals, updatedAt: new Date() };
   console.log(`[Cache] SHORT updated — ${signals.length} candidates${fails > 0 ? ` (${fails}/${total} sources failed)` : ''}`);
@@ -208,9 +228,11 @@ async function refreshAggressive() {
       if (s.length > 0) loaded++;
       for (const sig of s) signals.push({ ...sig, source: name, _generatedAt: ts });
       console.log(`  [${name}] ${s.length} signal(s)`);
+      const apiName = SOURCE_TO_API[name]; if (apiName && apiName !== 'multiple') recordSuccess(apiName, s.length);
     } catch (e) {
       fails++;
       console.warn(`  [${name}] failed: ${e.message}`);
+      const apiName = SOURCE_TO_API[name]; if (apiName && apiName !== 'multiple') recordError(apiName, e.message);
     }
   }));
   aggressiveCache = { signals, updatedAt: new Date() };
