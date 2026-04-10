@@ -127,9 +127,26 @@ async function processClosedTrades(closedOrders) {
   let newRecords = 0;
 
   for (const order of closedOrders) {
-    if (order.side !== 'sell' || order.status !== 'filled') continue;
+    if (order.status !== 'filled') continue;
     if (knownIds.has(order.id)) continue;
 
+    // Detect trade type: long exit (sell) or short cover (buy with COVER in reason)
+    const isLongExit = order.side === 'sell';
+    const isShortCover = order.side === 'buy' && order.engine_reason?.includes('COVER:');
+    // Also check logged JSON files for COVER prefix (engine_reason may not be on the Alpaca order)
+    let isShortFromFile = false;
+    if (!isLongExit && !isShortCover && order.side === 'buy') {
+      const coverFiles = fs.readdirSync(tradeHistoryDir).filter(f => f.includes(`_${order.symbol}_buy_`) && f.endsWith('.json'));
+      for (const f of coverFiles) {
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(tradeHistoryDir, f)));
+          if (data.id === order.id && data.engine_reason?.includes('COVER:')) { isShortFromFile = true; break; }
+        } catch {}
+      }
+    }
+    if (!isLongExit && !isShortCover && !isShortFromFile) continue;
+
+    const isShort   = isShortCover || isShortFromFile;
     const symbol    = order.symbol;
     const exitPrice = parseFloat(order.filled_avg_price || 0);
     const exitTime  = order.filled_at || order.updated_at;
@@ -142,34 +159,69 @@ async function processClosedTrades(closedOrders) {
     if (order.type === 'trailing_stop') exitReason = 'trailing_stop';
     else if (order.type === 'stop') exitReason = 'hard_stop';
     else if (order.type === 'market') {
-      // Check if it was a profit take or hard stop from engine
-      const tradeFiles = fs.readdirSync(tradeHistoryDir).filter(f => f.includes(`_${symbol}_sell_`) && f.endsWith('.json'));
+      // Check logged JSON files for engine_reason
+      const side = isShort ? 'buy' : 'sell';
+      const tradeFiles = fs.readdirSync(tradeHistoryDir).filter(f => f.includes(`_${symbol}_${side}_`) && f.endsWith('.json'));
       for (const f of tradeFiles) {
         try {
           const data = JSON.parse(fs.readFileSync(path.join(tradeHistoryDir, f)));
           if (data.id === order.id && data.engine_reason) {
-            if (data.engine_reason.includes('Profit target')) exitReason = 'profit_target';
-            else if (data.engine_reason.includes('Hard stop')) exitReason = 'hard_stop';
+            const reason = data.engine_reason;
+            if (reason.includes('Profit target') || reason.includes('profit')) exitReason = 'profit_target';
+            else if (reason.includes('Hard stop') || reason.includes('Stop') || reason.includes('stop')) exitReason = 'hard_stop';
+            else if (reason.includes('RSI cover') || reason.includes('oversold')) exitReason = 'rsi_cover';
             break;
           }
         } catch {}
       }
     }
 
-    // Find matching buy
-    const buy = await findBuyDetails(symbol, tradeHistoryDir);
-    const entryPrice = buy?.entryPrice || 0;
-    const entryTime  = buy?.entryTime || null;
+    // Find matching entry — buy for longs, sell-to-open for shorts
+    let entryPrice = 0, entryTime = null, entrySources = [], entryReason = 'unknown';
+    if (isShort) {
+      // Short entry is a sell order — look for sell files with SHORT prefix
+      const shortFiles = fs.readdirSync(tradeHistoryDir).filter(f => f.includes(`_${symbol}_sell_`) && f.endsWith('.json'));
+      shortFiles.sort().reverse();
+      for (const f of shortFiles) {
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(tradeHistoryDir, f)));
+          if (data.engine_reason?.includes('SHORT:')) {
+            entryPrice = parseFloat(data.filled_avg_price || 0);
+            if (!entryPrice && data.id) {
+              const filled = await fetchFilledPrice(data.id);
+              if (filled) entryPrice = filled;
+            }
+            entryTime = data.filled_at || data.submitted_at;
+            entryReason = data.engine_reason;
+            entrySources = ['short_entry'];
+            break;
+          }
+        } catch {}
+      }
+    } else {
+      const buy = await findBuyDetails(symbol, tradeHistoryDir);
+      entryPrice = buy?.entryPrice || 0;
+      entryTime = buy?.entryTime || null;
+      entryReason = buy?.reason || 'unknown';
+      entrySources = buy?.sources || [];
+    }
 
-    // Guard: skip trades with unresolved entry price to prevent corrupted P&L data
+    // Guard: skip trades with unresolved entry price
     if (!entryPrice) {
       console.warn(`  [Postmortem] SKIPPING ${symbol} — entry price is 0, would corrupt calibration data`);
       continue;
     }
 
-    const pnlPct   = ((exitPrice - entryPrice) / entryPrice * 100);
-    const pnlDollar = (exitPrice - entryPrice) * exitQty;
-    const isWin     = pnlPct > 0;
+    // P&L calculation — reversed for shorts (profit when price drops)
+    let pnlPct, pnlDollar;
+    if (isShort) {
+      pnlPct = ((entryPrice - exitPrice) / entryPrice * 100);  // Short: sold high, bought low = profit
+      pnlDollar = (entryPrice - exitPrice) * exitQty;
+    } else {
+      pnlPct = ((exitPrice - entryPrice) / entryPrice * 100);
+      pnlDollar = (exitPrice - entryPrice) * exitQty;
+    }
+    const isWin = pnlPct > 0;
 
     // Holding duration in hours
     let holdingHours = null;
@@ -187,11 +239,12 @@ async function processClosedTrades(closedOrders) {
       isWin,
       exitReason,
       holdingHours,
-      sources: buy?.sources || [],
-      buyReason: buy?.reason || 'unknown',
+      sources: entrySources,
+      buyReason: entryReason,
       entryTime,
       exitTime,
       orderId: order.id,
+      isShort: isShort || false,
     };
 
     ledger.trades.push(record);

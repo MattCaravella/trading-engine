@@ -469,14 +469,19 @@ async function evaluateShortTrade(ticker, equity, positions) {
   const state = loadState();
   const results = { approved: true, reasons: [] };
 
-  // 1. Drawdown check — if we're down 8% overall, no new shorts either
+  // 1. Drawdown check — shorts are HEDGES, so allow them during drawdowns
+  // Only block shorts if drawdown exceeds 2x the normal kill level (catastrophic)
   const dd = checkDrawdown(equity, state);
-  if (dd.killed) { results.approved = false; results.reasons.push(dd.reason); }
+  if (dd.killed && dd.drawdownPct > MAX_DRAWDOWN_PCT * 2) {
+    results.approved = false;
+    results.reasons.push(`CATASTROPHIC DRAWDOWN: ${dd.drawdownPct.toFixed(1)}% — all trading halted`);
+  }
 
-  // 2. Daily short cap
+  // 2. Daily short cap (fix: initialize dailyShorts if missing)
   const today = new Date().toISOString().slice(0, 10);
-  if (state.lastDay !== today) { state.dailyTrades = {}; state.lastDay = today; }
-  const dailyShorts = state.dailyShorts?.[today] || 0;
+  if (!state.dailyShorts) state.dailyShorts = {};
+  if (state.lastDay !== today) { state.dailyTrades = {}; state.dailyShorts = {}; state.lastDay = today; }
+  const dailyShorts = state.dailyShorts[today] || 0;
   if (dailyShorts >= MAX_DAILY_SHORTS) {
     results.approved = false;
     results.reasons.push(`DAILY SHORT CAP: ${dailyShorts}/${MAX_DAILY_SHORTS} shorts today`);
@@ -503,7 +508,23 @@ async function evaluateShortTrade(ticker, equity, positions) {
     results.reasons.push(`DUPLICATE SHORT: already short ${ticker}`);
   }
 
-  // 6. Liquidity check
+  // 6. Sector concentration for shorts (max 25% of short exposure in one sector)
+  if (currentShorts.length > 0) {
+    const shortSectorExposure = {};
+    for (const p of currentShorts) {
+      const sec = getSector(p.symbol);
+      shortSectorExposure[sec] = (shortSectorExposure[sec] || 0) + Math.abs(parseFloat(p.market_value || 0));
+    }
+    const newSector = getSector(ticker);
+    const currentSectorShort = shortSectorExposure[newSector] || 0;
+    const projectedPct = shortExposure > 0 ? ((currentSectorShort + equity * 0.05) / (shortExposure + equity * 0.05)) * 100 : 0;
+    if (projectedPct > 50) {
+      results.approved = false;
+      results.reasons.push(`SHORT SECTOR CONCENTRATION: ${newSector} would be ${projectedPct.toFixed(0)}% of short book (max 50%)`);
+    }
+  }
+
+  // 7. Liquidity check
   const liq = await checkLiquidity(ticker);
   if (liq.blocked) { results.approved = false; results.reasons.push(liq.reason); }
 

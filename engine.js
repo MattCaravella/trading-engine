@@ -483,18 +483,29 @@ async function runTradeCycle(getCandidatesFn) {
 }
 
 // ─── Short Engine ─────────────────────────────────────────────────────────────
-// Short stops: cover if stock rises 5% (loss) or falls 12% (profit target)
-// Also cover if RSI drops below 30 (oversold = bounce imminent)
 const SHORT_STOP_PCT   = 5;   // Stop loss: 5% adverse move (price up)
 const SHORT_TARGET_PCT = 12;  // Profit target: 12% decline
 const SHORT_RSI_COVER  = 30;  // RSI oversold cover trigger
+const SHORT_TRAIL_PCT  = 4;   // Trailing stop: cover if stock bounces 4% from its low
+const SHORT_MAX_HOLD_H = 168; // Max hold: 7 trading days (shorts have decay risk)
 
 async function calcShortQty(ticker, equity, maxPct) {
   try {
-    const { getBars, closes } = require('./data/prices');
-    const bars  = await getBars(ticker, 5);
-    const price = closes(bars).slice(-1)[0];
-    const pct   = maxPct ? Math.min(maxPct / 100, 0.05) : 0.05; // default 5% position
+    const { getBars, closes, returns } = require('./data/prices');
+    const bars  = await getBars(ticker, 60);
+    const cls   = closes(bars);
+    const price = cls.slice(-1)[0];
+    // Volatility-adjusted sizing for shorts (same logic as longs)
+    const BASELINE_VOL = 0.25;
+    const rets = returns(cls);
+    let pct = maxPct ? Math.min(maxPct / 100, 0.05) : 0.05;
+    if (rets.length >= 20) {
+      const recent = rets.slice(-30);
+      const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
+      const variance = recent.reduce((s, r) => s + (r - mean) ** 2, 0) / recent.length;
+      const realizedVol = Math.sqrt(variance) * Math.sqrt(252);
+      pct = Math.max(0.02, Math.min(0.05, pct * (BASELINE_VOL / Math.max(realizedVol, 0.01))));
+    }
     const qty   = Math.floor((equity * pct) / price);
     return Math.max(1, qty);
   } catch { return 1; }
@@ -578,6 +589,30 @@ async function runShortCycle(getShortCandidatesFn) {
           continue;
         }
       } catch {}
+
+      // Trailing stop for shorts: if stock bounced 4% from its low, cover
+      // Track low water mark (lowest price since entry)
+      if (!state.shortLows) state.shortLows = {};
+      if (!state.shortLows[ticker] || curr < state.shortLows[ticker]) state.shortLows[ticker] = curr;
+      const lowWater = state.shortLows[ticker];
+      const bounceFromLow = ((curr - lowWater) / lowWater) * 100;
+      if (bounceFromLow >= SHORT_TRAIL_PCT && lowWater < entry * 0.99) {
+        console.log(`  [SHORT TRAIL] ${ticker}: bounced ${bounceFromLow.toFixed(1)}% from low $${lowWater.toFixed(2)} — covering`);
+        await coverShort(ticker, qty, `Trailing stop: bounced ${bounceFromLow.toFixed(1)}% from low`);
+        delete state.shortLows[ticker];
+        infoAlert('Short Trailing Stop', `${ticker} covered — bounced ${bounceFromLow.toFixed(1)}% from low`, { ticker, bounceFromLow: bounceFromLow.toFixed(1) + '%' });
+        continue;
+      }
+
+      // Max hold time: cover if held too long (shorts have carry/borrow cost risk)
+      const shortHoldMs = Date.now() - new Date(pos.created_at || 0).getTime();
+      const shortHoldHours = shortHoldMs / 3600000;
+      if (shortHoldHours > SHORT_MAX_HOLD_H) {
+        console.log(`  [SHORT TIME] ${ticker}: held ${shortHoldHours.toFixed(0)}h > ${SHORT_MAX_HOLD_H}h — covering`);
+        await coverShort(ticker, qty, `Time exit: ${shortHoldHours.toFixed(0)}h > ${SHORT_MAX_HOLD_H}h max, P&L=${pnlPct.toFixed(2)}%`);
+        if (state.shortLows) delete state.shortLows[ticker];
+        continue;
+      }
     }
 
     // ── Enter new short positions ───────────────────────────────────────────
