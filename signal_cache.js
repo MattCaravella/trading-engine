@@ -215,6 +215,13 @@ async function refreshAggressive() {
   }));
   aggressiveCache = { signals, updatedAt: new Date() };
   console.log(`[Cache] AGGRESSIVE updated — ${signals.length} signals from ${loaded}/${total} sources${fails > 0 ? ` (${fails} failed)` : ''}`);
+
+  // Write candidates to file for dashboard (separate process can't share memory)
+  try {
+    const candidates = getAggressiveCandidates();
+    const PIPELINE_FILE = path.join(__dirname, 'trade_history/aggressive_pipeline.json');
+    fs.writeFileSync(PIPELINE_FILE, JSON.stringify({ candidates, updatedAt: new Date().toISOString() }));
+  } catch {}
 }
 
 function getAggressiveCandidates() {

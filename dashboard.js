@@ -1508,8 +1508,21 @@ async function getAggressiveData() {
   const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + parseFloat(t.pnl_pct || t.pnlPct || 0), 0) / wins.length : 0;
   const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + parseFloat(t.pnl_pct || t.pnlPct || 0), 0) / losses.length : 0;
 
-  // 5. Signals pipeline from state
-  const signals = Array.isArray(aggState.signals) ? aggState.signals : [];
+  // 5. Signals pipeline — read from file written by scheduler's signal_cache
+  let signals = [];
+  try {
+    const PIPELINE_FILE = path.join(__dirname, 'trade_history/aggressive_pipeline.json');
+    if (fs.existsSync(PIPELINE_FILE)) {
+      const pipeline = JSON.parse(fs.readFileSync(PIPELINE_FILE, 'utf8'));
+      signals = (pipeline.candidates || []).map(c => ({
+        ticker: c.ticker,
+        score: c.netScore,
+        source: c.topSource || c.sources?.[0] || '?',
+        direction: c.direction || 'bullish',
+        reason: c.topReason || '',
+      }));
+    }
+  } catch {}
 
   // 6. Recent trades (last 10)
   const recentTrades = allTrades.slice(-10).reverse().map(t => ({
