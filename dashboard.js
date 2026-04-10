@@ -1499,8 +1499,13 @@ async function getAggressiveData() {
     const tDate = (t.exit_time || t.exitTime || t.entry_time || t.entryTime || '').slice(0, 10);
     return tDate === today;
   });
-  const todayPnl = todayTrades.reduce((s, t) => s + parseFloat(t.pnl_dollar || t.pnlDollar || 0), 0);
-  const totalPnl = allTrades.reduce((s, t) => s + parseFloat(t.pnl_dollar || t.pnlDollar || 0), 0);
+  // Today P&L = unrealized (open positions) + realized (closed trades today)
+  const unrealizedPnl = livePositions.reduce((s, p) => s + parseFloat(p.pnl || 0), 0);
+  const realizedToday = todayTrades.reduce((s, t) => s + parseFloat(t.pnl_dollar || t.pnlDollar || 0), 0);
+  const todayPnl = unrealizedPnl + realizedToday;
+  // Total P&L = all realized + current unrealized
+  const totalRealized = allTrades.reduce((s, t) => s + parseFloat(t.pnl_dollar || t.pnlDollar || 0), 0);
+  const totalPnl = totalRealized + unrealizedPnl;
 
   const wins = allTrades.filter(t => t.is_win || t.isWin);
   const losses = allTrades.filter(t => !t.is_win && !t.isWin);
