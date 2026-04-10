@@ -427,6 +427,15 @@ const HTML = `<!DOCTYPE html>
   border:1px solid rgba(255,82,82,0.4); display:none; cursor:pointer;
 }
 .halt-badge.visible { display:inline-block; }
+/* Chart tabs */
+.chart-tab {
+  padding:3px 10px; border-radius:3px; border:1px solid var(--border);
+  background:transparent; color:var(--dim); font-size:11px; font-weight:bold;
+  cursor:pointer; transition:all 0.15s; letter-spacing:0.5px;
+}
+.chart-tab:hover, .chart-tab.active {
+  border-color:var(--accent); color:var(--accent); background:rgba(41,121,255,0.08);
+}
 </style>
 </head>
 <body>
@@ -505,6 +514,24 @@ const HTML = `<!DOCTYPE html>
       <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Starting Capital</div>
       <div class="val-box val-box-blue" style="font-size:24px">$100,000</div>
     </div>
+  </div>
+</div>
+
+<!-- P&L Chart -->
+<div class="panel" style="margin:1px 0;padding:0;overflow:hidden;">
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px 0 16px;">
+    <div class="panel-title" style="margin:0">Portfolio Performance</div>
+    <div id="chart-tabs" style="display:flex;gap:4px;">
+      <button class="chart-tab active" data-range="1D" onclick="switchChartRange('1D',this)">1D</button>
+      <button class="chart-tab" data-range="1W" onclick="switchChartRange('1W',this)">1W</button>
+      <button class="chart-tab" data-range="1M" onclick="switchChartRange('1M',this)">1M</button>
+      <button class="chart-tab" data-range="1Y" onclick="switchChartRange('1Y',this)">1Y</button>
+      <button class="chart-tab" data-range="ALL" onclick="switchChartRange('ALL',this)">ALL</button>
+    </div>
+  </div>
+  <div style="position:relative;padding:8px 16px 12px;">
+    <div id="chart-info" style="position:absolute;top:8px;left:20px;font-size:12px;color:var(--dim);z-index:2;"></div>
+    <canvas id="pnl-chart" width="1200" height="220" style="width:100%;height:220px;cursor:crosshair;"></canvas>
   </div>
 </div>
 
@@ -860,10 +887,214 @@ setInterval(() => {
 // Full refresh every 10 seconds
 setInterval(refresh, 10000);
 refresh();
+
+// ─── P&L Chart ──────────────────────────────────────────────────────────────
+let chartData = [];
+let currentRange = '1M';
+
+function switchChartRange(range, btn) {
+  currentRange = range;
+  document.querySelectorAll('.chart-tab').forEach(t => t.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  drawChart();
+}
+
+function filterByRange(points, range) {
+  if (!points.length) return points;
+  const now = new Date();
+  let cutoff;
+  if (range === '1D') cutoff = new Date(now - 86400000);
+  else if (range === '1W') cutoff = new Date(now - 7 * 86400000);
+  else if (range === '1M') cutoff = new Date(now - 30 * 86400000);
+  else if (range === '1Y') cutoff = new Date(now - 365 * 86400000);
+  else return points; // ALL
+  const cutStr = cutoff.toISOString().slice(0, 10);
+  return points.filter(p => p.date >= cutStr);
+}
+
+function drawChart() {
+  const canvas = document.getElementById('pnl-chart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+
+  ctx.clearRect(0, 0, W, H);
+
+  let points = filterByRange(chartData, currentRange);
+  if (points.length < 2) {
+    ctx.fillStyle = '#556b8a';
+    ctx.font = '13px Segoe UI, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('No equity data for this period', W/2, H/2);
+    document.getElementById('chart-info').textContent = '';
+    return;
+  }
+
+  const pad = { top: 25, right: 60, bottom: 25, left: 10 };
+  const cW = W - pad.left - pad.right;
+  const cH = H - pad.top - pad.bottom;
+
+  const vals = points.map(p => p.pnlPct);
+  let minV = Math.min(...vals, 0);
+  let maxV = Math.max(...vals, 0);
+  const range = maxV - minV || 1;
+  minV -= range * 0.08;
+  maxV += range * 0.08;
+
+  const xScale = cW / (points.length - 1);
+  const yScale = cH / (maxV - minV);
+  const toX = i => pad.left + i * xScale;
+  const toY = v => pad.top + (maxV - v) * yScale;
+
+  // Zero line
+  const zeroY = toY(0);
+  ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(pad.left, zeroY);
+  ctx.lineTo(W - pad.right, zeroY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Grid lines
+  ctx.fillStyle = '#556b8a';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'right';
+  const steps = 4;
+  for (let i = 0; i <= steps; i++) {
+    const v = minV + (maxV - minV) * (1 - i / steps);
+    const y = pad.top + (i / steps) * cH;
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    ctx.fillText((v >= 0 ? '+' : '') + v.toFixed(2) + '%', W - 5, y + 3);
+  }
+
+  // Gradient fill
+  const lastVal = vals[vals.length - 1];
+  const isUp = lastVal >= 0;
+  const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
+  if (isUp) {
+    grad.addColorStop(0, 'rgba(0,230,118,0.25)');
+    grad.addColorStop(1, 'rgba(0,230,118,0.02)');
+  } else {
+    grad.addColorStop(0, 'rgba(255,82,82,0.02)');
+    grad.addColorStop(1, 'rgba(255,82,82,0.25)');
+  }
+  ctx.beginPath();
+  ctx.moveTo(toX(0), zeroY);
+  for (let i = 0; i < points.length; i++) ctx.lineTo(toX(i), toY(vals[i]));
+  ctx.lineTo(toX(points.length - 1), zeroY);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  ctx.moveTo(toX(0), toY(vals[0]));
+  for (let i = 1; i < points.length; i++) ctx.lineTo(toX(i), toY(vals[i]));
+  ctx.strokeStyle = isUp ? '#00e676' : '#ff5252';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Current value dot
+  const lastX = toX(points.length - 1), lastY = toY(lastVal);
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
+  ctx.fillStyle = isUp ? '#00e676' : '#ff5252';
+  ctx.fill();
+
+  // Info text
+  const p = points[points.length - 1];
+  const sign = p.pnlPct >= 0 ? '+' : '';
+  document.getElementById('chart-info').innerHTML =
+    '<span style="color:' + (isUp ? 'var(--green)' : 'var(--red)') + ';font-size:18px;font-weight:bold;">' +
+    sign + p.pnlPct.toFixed(2) + '%</span> ' +
+    '<span style="color:var(--dim);">($' + sign + p.pnlDollar.toFixed(0) + ')</span> ' +
+    '<span style="color:var(--dim);font-size:10px;">' + points.length + ' days</span>';
+
+  // Hover crosshair
+  canvas.onmousemove = function(e) {
+    const r = canvas.getBoundingClientRect();
+    const mx = e.clientX - r.left;
+    const idx = Math.round((mx - pad.left) / xScale);
+    if (idx >= 0 && idx < points.length) {
+      const pt = points[idx];
+      const s = pt.pnlPct >= 0 ? '+' : '';
+      document.getElementById('chart-info').innerHTML =
+        '<span style="color:' + (pt.pnlPct >= 0 ? 'var(--green)' : 'var(--red)') + ';font-size:18px;font-weight:bold;">' +
+        s + pt.pnlPct.toFixed(2) + '%</span> ' +
+        '<span style="color:var(--dim);">($' + s + pt.pnlDollar.toFixed(0) + ')</span> ' +
+        '<span style="color:var(--dim);font-size:10px;">' + pt.date + '</span>';
+    }
+  };
+  canvas.onmouseleave = function() { drawChart(); }; // redraw to reset info
+}
+
+async function loadEquityChart() {
+  try {
+    const res = await fetch('/api/equity-history');
+    const data = await res.json();
+    chartData = data.points || [];
+    drawChart();
+  } catch {}
+}
+loadEquityChart();
+setInterval(loadEquityChart, 60000); // refresh chart every minute
+window.addEventListener('resize', drawChart);
 </script>
 
 </body>
 </html>`;
+
+// ─── Equity History for P&L Chart ────────────────────────────────────────────
+function getEquityHistory() {
+  const INITIAL = 100000;
+  const points = [];
+
+  // Load daily snapshots from equity_curve.json or DB
+  try {
+    const EQUITY_FILE = path.join(__dirname, 'trade_history/equity_curve.json');
+    if (fs.existsSync(EQUITY_FILE)) {
+      const data = JSON.parse(fs.readFileSync(EQUITY_FILE, 'utf8'));
+      if (data.snapshots) {
+        for (const s of data.snapshots) {
+          points.push({ date: s.date, equity: s.equity, positions: s.positions || 0 });
+        }
+      }
+    }
+  } catch {}
+
+  // Also pull from DB if available
+  try {
+    const db = require('./database');
+    const dbSnaps = db.getEquityCurve();
+    if (dbSnaps && dbSnaps.length > 0) {
+      const existing = new Set(points.map(p => p.date));
+      for (const s of dbSnaps) {
+        if (!existing.has(s.date)) {
+          points.push({ date: s.date, equity: parseFloat(s.equity), positions: s.positions || 0 });
+        }
+      }
+    }
+  } catch {}
+
+  // Sort by date
+  points.sort((a, b) => a.date.localeCompare(b.date));
+
+  // Compute P&L % relative to initial capital
+  for (const p of points) {
+    p.pnlPct = ((p.equity - INITIAL) / INITIAL) * 100;
+    p.pnlDollar = p.equity - INITIAL;
+  }
+
+  return { points, initialCapital: INITIAL };
+}
 
 // ─── News Data Fetcher ──────────────────────────────────────────────────────
 async function getNewsData() {
@@ -1166,6 +1397,14 @@ const server = http.createServer(async (req, res) => {
   } else if (req.url === '/api/status') {
     try {
       const data = await getStatus();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data));
+    } catch (e) {
+      res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
+    }
+  } else if (req.url.startsWith('/api/equity-history')) {
+    try {
+      const data = getEquityHistory();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(data));
     } catch (e) {
