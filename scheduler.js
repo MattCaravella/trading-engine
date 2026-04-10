@@ -213,7 +213,7 @@ async function tick() {
     if (isWeekend()) { writeHeartbeat('idle-weekend'); return; }
     if (isPreMarket())   { await doPreMarket(); writeHeartbeat('pre_market'); return; }
     if (isMarketHours()) { await doMarketOpen(); await doMiddayNews(); await doAfternoonNews(); await doFastRefresh(); await doTradeExecution(); await doAggressiveRefresh(); await doAggressiveFastRefresh(); await doAggressiveExecution(); writeHeartbeat('market'); return; }
-    if (isAfterHours())  { await doAfterHours(); writeHeartbeat('after_hours'); return; }
+    if (isAfterHours())  { await doAfterHours(); await doAggressiveExecution(); writeHeartbeat('after_hours'); return; }
     writeHeartbeat('idle');
   } finally {
     ticking = false;

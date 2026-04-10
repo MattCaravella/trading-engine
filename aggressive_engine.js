@@ -303,9 +303,51 @@ async function runAggressiveCycle(getCandidatesFn) {
     console.log(`[Aggressive] Deployed: $${aggressiveInvested.toLocaleString()} / $${aggressiveEquity.toLocaleString()} (${(aggressiveInvested / aggressiveEquity * 100).toFixed(1)}%)`);
 
     const slots = MAX_POSITIONS - aggressivePositions.length;
-    if (slots <= 0) {
-      console.log('[Aggressive] Max aggressive positions reached.');
+
+    // ── Position rotation: swap weak positions for strong new signals ──────
+    // If all slots full AND a new candidate scores 75+ AND we have a losing position,
+    // sell the worst loser and buy the new candidate
+    const ROTATION_MIN_SCORE = 75;  // New signal must be high conviction
+    const ROTATION_MAX_LOSS = -2;   // Only rotate positions losing > 2%
+    if (slots <= 0 && candidates.length > 0) {
+      const bestCandidate = candidates.find(c => c.netScore >= ROTATION_MIN_SCORE && !openTickers.has(c.ticker) && !isOnCooldown(c.ticker, state));
+      if (bestCandidate) {
+        // Find the worst-performing aggressive position
+        const worstPos = aggressivePositions
+          .filter(p => parseFloat(p.unrealized_plpc) * 100 <= ROTATION_MAX_LOSS)
+          .sort((a, b) => parseFloat(a.unrealized_plpc) - parseFloat(b.unrealized_plpc))[0];
+
+        if (worstPos) {
+          const worstPnl = (parseFloat(worstPos.unrealized_plpc) * 100).toFixed(2);
+          console.log(`  [Aggressive][ROTATE] Swapping ${worstPos.symbol} (${worstPnl}%) for ${bestCandidate.ticker} (score=${bestCandidate.netScore})`);
+          // Sell the loser
+          const sell = await alpaca('POST', '/orders', { symbol: worstPos.symbol, qty: worstPos.qty, side: 'sell', type: 'market', time_in_force: 'day' });
+          if (sell && sell.id) {
+            logTrade({ ...sell, engine_reason: `AGGRESSIVE: Rotation — sold ${worstPos.symbol} at ${worstPnl}% to buy ${bestCandidate.ticker} (score ${bestCandidate.netScore})` });
+            warningAlert('Aggressive Rotation', `Sold ${worstPos.symbol} (${worstPnl}%) → buying ${bestCandidate.ticker} (score ${bestCandidate.netScore})`, { sold: worstPos.symbol, bought: bestCandidate.ticker });
+            delete state.aggressivePositions[worstPos.symbol];
+            if (state.positionSources) delete state.positionSources[worstPos.symbol];
+            // Buy the replacement
+            const top = bestCandidate.signals.sort((a, b) => b.score - a.score)[0];
+            const reason = `ROTATION Score ${bestCandidate.netScore}/100 [${bestCandidate.sources.join('+')}] | ${top.reason}`;
+            const buyOrder = await placeBuy(bestCandidate.ticker, reason, aggressiveEquity);
+            if (buyOrder && buyOrder.id) {
+              recordAggressiveExecuted();
+              state.aggressivePositions[bestCandidate.ticker] = { entryTime: now, source: top?.source || 'unknown', score: bestCandidate.netScore, orderId: buyOrder.id };
+              if (!state.positionSources) state.positionSources = {};
+              state.positionSources[bestCandidate.ticker] = top?.source || 'unknown';
+              console.log(`  [Aggressive][ROTATED] ${worstPos.symbol} → ${bestCandidate.ticker}`);
+            }
+          }
+        }
+      }
       saveState(state);
+      console.log(`[Aggressive] Cycle complete — all ${MAX_POSITIONS} slots filled, rotation checked`);
+      return;
+    }
+    if (slots <= 0) {
+      saveState(state);
+      console.log('[Aggressive] Max aggressive positions reached, no rotation candidates.');
       return;
     }
 
