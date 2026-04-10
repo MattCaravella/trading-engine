@@ -19,8 +19,9 @@ async function getSignals() {
   const signals = [];
 
   try {
-    // Fetch short volume data from QuiverQuant
-    const res = await fetch('https://api.quiverquant.com/beta/live/shortvol', {
+    // Fetch off-exchange (dark pool) short volume from QuiverQuant
+    // /beta/live/shortvol is deprecated — use /beta/live/offexchange instead
+    const res = await fetch('https://api.quiverquant.com/beta/live/offexchange', {
       headers: { 'Authorization': `Token ${TOKEN}`, 'Accept': 'application/json' },
     });
     if (!res.ok) {
@@ -37,8 +38,10 @@ async function getSignals() {
     for (const row of data) {
       const ticker = (row.Ticker || row.ticker || '').toUpperCase();
       if (!universeSet.has(ticker)) continue;
-      const shortPct = parseFloat(row.ShortVolPercent || row.short_percent || row.ShortPercent || 0) * 100;
-      if (shortPct > 20) {
+      // DPI = dark pool short ratio (0.0-1.0), convert to percentage
+      const dpi = parseFloat(row.DPI || row.ShortVolPercent || row.short_percent || 0);
+      const shortPct = dpi > 1 ? dpi : dpi * 100; // handle both 0.58 and 58 formats
+      if (shortPct > 40) { // Off-exchange short > 40% = elevated short interest
         // Keep the highest short pct if duplicates
         if (!shortMap.has(ticker) || shortMap.get(ticker) < shortPct) {
           shortMap.set(ticker, shortPct);

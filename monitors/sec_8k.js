@@ -21,8 +21,8 @@ async function getSignals() {
 
   try {
     const today = new Date().toISOString().slice(0, 10);
-    // EDGAR EFTS full-text search API for 8-K filings
-    const url = `https://efts.sec.gov/LATEST/search-index?q=%228-K%22&forms=8-K&dateRange=custom&startdt=${today}&enddt=${today}`;
+    // EDGAR EFTS search API — returns Elasticsearch-format results with _source objects
+    const url = `https://efts.sec.gov/LATEST/search-index?q=%22material+definitive+agreement%22+OR+%22approval%22+OR+%22partnership%22+OR+%22acquisition%22&forms=8-K&dateRange=custom&startdt=${today}&enddt=${today}`;
 
     const res = await fetch(url, {
       headers: { 'User-Agent': 'TradingBot/1.0 contact@example.com', 'Accept': 'application/json' },
@@ -49,22 +49,28 @@ async function getSignals() {
       return [];
     }
 
-    const hits = data.hits || data.filings || data.results || [];
-    if (!Array.isArray(hits) || hits.length === 0) {
+    // EDGAR returns nested: { hits: { total: {...}, hits: [...] } }
+    const rawHits = data?.hits?.hits || data?.hits || data?.filings || data?.results || [];
+    const hits = Array.isArray(rawHits) ? rawHits : [];
+    if (hits.length === 0) {
       console.log('  [sec_8k] no 8-K filings found today');
       return [];
     }
 
+    console.log(`  [sec_8k] processing ${hits.length} 8-K filings...`);
+
     // Build lookup: company name words -> ticker for matching
     const universeSet = new Set(UNIVERSE);
 
-    for (const filing of hits) {
-      const companyName = (filing.company_name || filing.entity_name || filing.companyName || '').toUpperCase();
-      const title       = (filing.title || filing.form_title || filing.description || '').toLowerCase();
-      const content     = (filing.snippet || filing.summary || title || '').toLowerCase();
+    for (const rawFiling of hits) {
+      // EDGAR EFTS wraps each hit in _source
+      const filing = rawFiling._source || rawFiling;
+      const companyName = (filing.display_names?.[0] || filing.company_name || filing.entity_name || '').toUpperCase();
+      const title       = (filing.file_description || filing.title || '').toLowerCase();
+      const content     = (title + ' ' + companyName).toLowerCase();
 
-      // Try to extract ticker from filing data
-      let ticker = (filing.ticker || filing.tickers || '').toUpperCase().trim();
+      // Try to extract ticker from filing data — EDGAR uses CIK, not tickers
+      let ticker = (filing.ticker || filing.tickers?.[0] || '').toUpperCase().trim();
 
       // If no ticker field, try matching company name against universe
       if (!ticker || !universeSet.has(ticker)) {

@@ -1441,12 +1441,14 @@ async function getAggressiveData() {
   } catch {}
 
   // 2. Get live Alpaca positions tagged as aggressive
+  // State file uses aggressivePositions object: { MRVL: { entryTime, source, score, orderId } }
+  const aggPositionMap = aggState.aggressivePositions || {};
+  const aggSymbols = new Set(Object.keys(aggPositionMap));
+
   let livePositions = [];
   try {
     const allPositions = await alpaca('GET', '/positions');
     if (Array.isArray(allPositions)) {
-      // If aggressive_state has positions, match by symbol
-      const aggSymbols = new Set((aggState.positions || []).map(p => p.symbol));
       livePositions = allPositions.filter(p => aggSymbols.has(p.symbol)).map(p => {
         const qty = parseFloat(p.qty || 0);
         const entry = parseFloat(p.avg_entry_price || 0);
@@ -1454,10 +1456,10 @@ async function getAggressiveData() {
         const pnl = parseFloat(p.unrealized_pl || 0);
         const pnlPct = parseFloat(p.unrealized_plpc || 0) * 100;
         const mv = parseFloat(p.market_value || 0);
-        // Find entry time from aggState
-        const statePos = (aggState.positions || []).find(sp => sp.symbol === p.symbol);
-        const entryTime = statePos?.entryTime || statePos?.entry_time || null;
-        const strategy = statePos?.strategy || statePos?.buyReason || 'aggressive';
+        // Find entry time from aggState position map
+        const statePos = aggPositionMap[p.symbol];
+        const entryTime = statePos?.entryTime || null;
+        const strategy = statePos?.source || 'aggressive';
         return {
           symbol: p.symbol, qty, entry: entry.toFixed(2), current: curr.toFixed(2),
           pnl: pnl.toFixed(2), pnlPct: pnlPct.toFixed(2), mv: mv.toFixed(2),
@@ -1467,20 +1469,18 @@ async function getAggressiveData() {
     }
   } catch {}
 
-  // If no live positions found, fall back to state file positions
-  if (livePositions.length === 0 && Array.isArray(aggState.positions) && aggState.positions.length > 0) {
-    livePositions = aggState.positions.map(p => ({
-      symbol: p.symbol,
-      qty: p.qty || 0,
-      entry: parseFloat(p.entry_price || p.entryPrice || 0).toFixed(2),
-      current: parseFloat(p.current_price || p.currentPrice || 0).toFixed(2),
-      pnl: parseFloat(p.pnl || p.unrealized_pl || 0).toFixed(2),
-      pnlPct: parseFloat(p.pnlPct || p.unrealized_plpc || 0).toFixed(2),
-      mv: parseFloat(p.market_value || p.mv || 0).toFixed(2),
-      entryTime: p.entryTime || p.entry_time || null,
-      strategy: p.strategy || p.buyReason || 'aggressive',
-      status: 'OPEN',
-    }));
+  // If no live positions found, fall back to state file
+  if (livePositions.length === 0 && aggSymbols.size > 0) {
+    livePositions = [...aggSymbols].map(sym => {
+      const p = aggPositionMap[sym];
+      return {
+        symbol: sym, qty: '?', entry: '?', current: '?',
+        pnl: '?', pnlPct: '?', mv: '?',
+        entryTime: p?.entryTime || null,
+        strategy: p?.source || 'aggressive',
+        status: 'PENDING',
+      };
+    });
   }
 
   // 3. Read performance ledger for aggressive trades
