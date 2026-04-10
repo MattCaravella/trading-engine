@@ -246,9 +246,17 @@ async function getStatus() {
     const aggStatePath = path.join(__dirname, 'trade_history/aggressive_state.json');
     if (fs.existsSync(aggStatePath)) {
       const aggState = JSON.parse(fs.readFileSync(aggStatePath, 'utf8'));
-      const aggPositions = Array.isArray(aggState.positions) ? aggState.positions : [];
-      const deployed = aggPositions.reduce((s, p) => s + Math.abs(parseFloat(p.market_value || p.mv || 0)), 0);
-      aggressive = { active: true, positions: aggPositions.length, deployed: Math.round(deployed) };
+      const aggPositionCount = Object.keys(aggState.aggressivePositions || {}).length;
+      // Get live deployed value from Alpaca
+      let deployed = 0;
+      try {
+        const allPos = await alpaca('GET', '/positions');
+        if (Array.isArray(allPos)) {
+          const aggSymbols = new Set(Object.keys(aggState.aggressivePositions || {}));
+          deployed = allPos.filter(p => aggSymbols.has(p.symbol)).reduce((s, p) => s + Math.abs(parseFloat(p.market_value || 0)), 0);
+        }
+      } catch {}
+      aggressive = { active: true, positions: aggPositionCount, deployed: Math.round(deployed) };
     } else {
       aggressive = { active: false, positions: 0, deployed: 0 };
     }
