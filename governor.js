@@ -540,12 +540,90 @@ function recordShortExecuted() {
   saveState(state);
 }
 
+// ─── Aggressive Trade Evaluation ──────────────────────────────────────────────
+const AGGRESSIVE_MAX_POSITIONS = 8;
+const AGGRESSIVE_MAX_DAILY     = 15;
+const AGGRESSIVE_ALLOCATION    = 0.10;
+
+async function evaluateAggressiveTrade(ticker, equity, positions) {
+  const state = loadState();
+  const results = { approved: true, reasons: [] };
+
+  // 1. Drawdown check — use same drawdown kill as main engine
+  const dd = checkDrawdown(equity, state);
+  if (dd.killed) {
+    results.approved = false;
+    results.reasons.push(dd.reason);
+  }
+
+  // 2. Max aggressive positions (8)
+  // Count positions tagged as aggressive by checking aggressive engine state
+  let aggressiveCount = 0;
+  try {
+    const aggStateFile = path.join(__dirname, 'trade_history/aggressive_state.json');
+    if (fs.existsSync(aggStateFile)) {
+      const aggState = JSON.parse(fs.readFileSync(aggStateFile));
+      aggressiveCount = Object.keys(aggState.aggressivePositions || {}).length;
+    }
+  } catch {}
+
+  if (aggressiveCount >= AGGRESSIVE_MAX_POSITIONS) {
+    results.approved = false;
+    results.reasons.push(`AGGRESSIVE MAX POSITIONS: ${aggressiveCount}/${AGGRESSIVE_MAX_POSITIONS} slots filled`);
+  }
+
+  // 3. Daily aggressive trade cap (15)
+  const today = new Date().toISOString().slice(0, 10);
+  if (!state.dailyAggressive) state.dailyAggressive = {};
+  if (state.lastDay !== today) {
+    state.dailyTrades = {};
+    state.dailyShorts = state.dailyShorts || {};
+    state.dailyAggressive = {};
+    state.lastDay = today;
+  }
+  const dailyAggressive = state.dailyAggressive[today] || 0;
+  if (dailyAggressive >= AGGRESSIVE_MAX_DAILY) {
+    results.approved = false;
+    results.reasons.push(`AGGRESSIVE DAILY CAP: ${dailyAggressive}/${AGGRESSIVE_MAX_DAILY} aggressive trades today`);
+  }
+
+  // 4. Already have this ticker (in aggressive OR main engine)
+  if (positions.some(p => p.symbol === ticker)) {
+    results.approved = false;
+    results.reasons.push(`DUPLICATE POSITION: already holding ${ticker} (main or aggressive)`);
+  }
+
+  // 5. Liquidity check (same as main engine)
+  const liq = await checkLiquidity(ticker);
+  if (liq.blocked) {
+    results.approved = false;
+    results.reasons.push(liq.reason);
+  }
+
+  // NO sector check — aggressive engine is momentum-driven
+  // NO correlation check — positions too small and short-lived
+  // NO earnings block — aggressive engine wants catalysts
+
+  saveState(state);
+  return results;
+}
+
+function recordAggressiveExecuted() {
+  const state = loadState();
+  const today = new Date().toISOString().slice(0, 10);
+  if (!state.dailyAggressive) state.dailyAggressive = {};
+  state.dailyAggressive[today] = (state.dailyAggressive[today] || 0) + 1;
+  saveState(state);
+}
+
 module.exports = {
   evaluateTrade,
   evaluateShortTrade,
+  evaluateAggressiveTrade,
   reconcileStops,
   recordTradeExecuted,
   recordShortExecuted,
+  recordAggressiveExecuted,
   updatePeakEquity,
   getStatus,
   checkLiquidity,
@@ -556,4 +634,7 @@ module.exports = {
   MAX_SHORT_POSITIONS,
   MAX_SHORT_EXPOSURE,
   MAX_DAILY_SHORTS,
+  AGGRESSIVE_MAX_POSITIONS,
+  AGGRESSIVE_MAX_DAILY,
+  AGGRESSIVE_ALLOCATION,
 };

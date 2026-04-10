@@ -1,15 +1,18 @@
 const fs   = require('fs');
 const path = require('path');
 const { isPreMarket, isMarketHours, isAfterHours, isWeekend, timeLabel, etTimeString, getETComponents } = require('./market_hours');
-const { refreshSlow, refreshFast, refreshNews, refreshShort, getCandidates, getShortCandidates, cacheStatus } = require('./signal_cache');
+const { refreshSlow, refreshFast, refreshNews, refreshShort, refreshAggressive, getCandidates, getShortCandidates, getAggressiveCandidates, cacheStatus } = require('./signal_cache');
 const { runTradeCycle, placeOvernightTrailingStops, runShortCycle } = require('./engine');
+const { runAggressiveCycle } = require('./aggressive_engine');
 const { generateSummary }                                      = require('./daily_summary');
 const { generateForecast }                                     = require('./daily_forecast');
 const { runCalibration }                                       = require('./strategy_calibrator');
 const { infoAlert, warningAlert }                              = require('./alerts');
 
-const FAST_REFRESH_MS  = 30 * 60 * 1000;
-const TRADE_EXEC_MS    = 5  * 60 * 1000;
+const FAST_REFRESH_MS      = 30 * 60 * 1000;
+const TRADE_EXEC_MS        = 5  * 60 * 1000;
+const AGGRESSIVE_EXEC_MS   = 2  * 60 * 1000;  // Every 2 minutes
+const AGGRESSIVE_REFRESH_MS = 15 * 60 * 1000;  // Every 15 minutes
 const HEARTBEAT_FILE   = path.join(__dirname, 'trade_history/heartbeat.json');
 const TASK_LOG_FILE    = path.join(__dirname, 'trade_history/task_log.jsonl');
 const HALT_FLAG        = path.join(__dirname, 'trade_history/halt.flag');
@@ -28,8 +31,10 @@ function logTask(task, status, extra = {}) {
 }
 
 const state = {
-  preMarketDone: false, marketOpenDone: false, afterHoursDone: false, middayNewsDone: false,
+  preMarketDone: false, marketOpenDone: false, afterHoursDone: false, middayNewsDone: false, afternoonNewsDone: false,
   lastFastRefresh: 0, lastTradeExecution: 0, lastDay: -1,
+  // Aggressive engine state
+  lastAggressiveExecution: 0, lastAggressiveRefresh: 0, aggressiveRefreshDone: false,
 };
 
 async function doPreMarket() {
@@ -89,6 +94,22 @@ async function doMiddayNews() {
   state.middayNewsDone = true;
 }
 
+async function doAfternoonNews() {
+  if (state.afternoonNewsDone) return;
+  const { mins } = getETComponents();
+  if (mins < 840) return;  // 840 = 2:00 PM ET
+  const start = Date.now();
+  console.log(`\n[Scheduler] AFTERNOON NEWS refresh — ${etTimeString()} ET`);
+  try {
+    await refreshNews();
+    logTask('afternoon_news', 'completed', { durationMs: Date.now() - start });
+  } catch (e) {
+    logTask('afternoon_news', 'failed', { error: e.message, durationMs: Date.now() - start });
+    warningAlert('Scheduled Task Failed', 'afternoon_news task failed', { task: 'afternoon_news', error: e.message });
+  }
+  state.afternoonNewsDone = true;
+}
+
 let executingTrade = false;
 async function doTradeExecution() {
   if (executingTrade) { console.log('[Scheduler] Trade cycle still running, skipping'); return; }
@@ -103,6 +124,48 @@ async function doTradeExecution() {
     state.lastTradeExecution = Date.now();
   } finally {
     executingTrade = false;
+  }
+}
+
+// ─── Aggressive Engine Functions ──────────────────────────────────────────────
+async function doAggressiveRefresh() {
+  if (state.aggressiveRefreshDone) return;
+  const start = Date.now();
+  console.log(`\n[Scheduler] AGGRESSIVE initial refresh — ${etTimeString()} ET`);
+  try {
+    await refreshAggressive();
+    logTask('aggressive_refresh', 'completed', { durationMs: Date.now() - start });
+  } catch (e) {
+    logTask('aggressive_refresh', 'failed', { error: e.message, durationMs: Date.now() - start });
+    warningAlert('Scheduled Task Failed', 'aggressive_refresh task failed', { task: 'aggressive_refresh', error: e.message });
+  }
+  state.aggressiveRefreshDone = true;
+  state.lastAggressiveRefresh = Date.now();
+}
+
+async function doAggressiveFastRefresh() {
+  if (Date.now() - state.lastAggressiveRefresh < AGGRESSIVE_REFRESH_MS) return;
+  console.log(`\n[Scheduler] AGGRESSIVE fast refresh — ${etTimeString()} ET`);
+  try {
+    await refreshAggressive();
+    state.lastAggressiveRefresh = Date.now();
+  } catch (e) {
+    console.warn(`[Scheduler] Aggressive refresh failed: ${e.message}`);
+  }
+}
+
+let executingAggressive = false;
+async function doAggressiveExecution() {
+  if (executingAggressive) { console.log('[Scheduler] Aggressive cycle still running, skipping'); return; }
+  if (Date.now() - state.lastAggressiveExecution < AGGRESSIVE_EXEC_MS) return;
+  executingAggressive = true;
+  try {
+    await runAggressiveCycle(getAggressiveCandidates);
+    state.lastAggressiveExecution = Date.now();
+  } catch (e) {
+    console.error('[Scheduler] Aggressive cycle error:', e.message);
+  } finally {
+    executingAggressive = false;
   }
 }
 
@@ -129,7 +192,7 @@ async function doAfterHours() {
 function resetDailyFlags() {
   const { day } = getETComponents();
   if (day !== state.lastDay) {
-    state.preMarketDone=false; state.marketOpenDone=false; state.afterHoursDone=false; state.middayNewsDone=false;
+    state.preMarketDone=false; state.marketOpenDone=false; state.afterHoursDone=false; state.middayNewsDone=false; state.afternoonNewsDone=false; state.aggressiveRefreshDone=false;
     state.lastDay=day;
     console.log(`[Scheduler] New trading day — flags reset`);
   }
@@ -149,7 +212,7 @@ async function tick() {
     resetDailyFlags();
     if (isWeekend()) { writeHeartbeat('idle-weekend'); return; }
     if (isPreMarket())   { await doPreMarket(); writeHeartbeat('pre_market'); return; }
-    if (isMarketHours()) { await doMarketOpen(); await doMiddayNews(); await doFastRefresh(); await doTradeExecution(); writeHeartbeat('market'); return; }
+    if (isMarketHours()) { await doMarketOpen(); await doMiddayNews(); await doAfternoonNews(); await doFastRefresh(); await doTradeExecution(); await doAggressiveRefresh(); await doAggressiveFastRefresh(); await doAggressiveExecution(); writeHeartbeat('market'); return; }
     if (isAfterHours())  { await doAfterHours(); writeHeartbeat('after_hours'); return; }
     writeHeartbeat('idle');
   } finally {
@@ -182,9 +245,16 @@ async function init() {
     console.log('[Scheduler] Catching up: news scrape...');
     await refreshNews();
 
-    // Mark midday news as done if we're past 12 PM (it just ran above)
+    // Catch up: aggressive sources
+    console.log('[Scheduler] Catching up: aggressive sources...');
+    await refreshAggressive();
+    state.aggressiveRefreshDone = true;
+    state.lastAggressiveRefresh = Date.now();
+
+    // Mark news refreshes as done based on current time (catch-up ran them already)
     const { mins } = getETComponents();
     if (mins >= 720) state.middayNewsDone = true;
+    if (mins >= 840) state.afternoonNewsDone = true;
 
     logTask('startup_catchup', 'completed');
     console.log('[Scheduler] Catch-up complete — resuming normal schedule');
@@ -199,10 +269,15 @@ console.log('║                                                          ║');
 console.log('║  8:00 AM ET   → Slow sources + news scrape               ║');
 console.log('║  9:30 AM ET   → Market open fast refresh + short scan    ║');
 console.log('║  12:00 PM ET  → Midday news scrape                       ║');
+console.log('║  2:00 PM ET   → Afternoon news scrape                    ║');
 console.log('║  Every 5 min  → Long + short trade execution             ║');
 console.log('║  Every 30 min → Fast refresh + short scan                ║');
 console.log('║  4:00 PM ET   → After-hours: summary + forecast + stops  ║');
 console.log('║  Overnight    → Idle                                     ║');
+console.log('║──────────────────────────────────────────────────────────║');
+console.log('║  AGGRESSIVE ENGINE (10% capital, momentum)               ║');
+console.log('║  Every 2 min  → Aggressive trade execution               ║');
+console.log('║  Every 15 min → Aggressive signal refresh                ║');
 console.log('╚══════════════════════════════════════════════════════════╝');
 console.log(`\nCurrent time: ${etTimeString()} ET — ${timeLabel()}\n`);
 

@@ -239,6 +239,21 @@ function getLastNewsRun() {
 
 async function getStatus() {
   const [api, sched, indices] = await Promise.all([getApiData(), Promise.resolve(getSchedulerInfo()), getIndexData()]);
+
+  // Aggressive engine summary for main dashboard
+  let aggressive = null;
+  try {
+    const aggStatePath = path.join(__dirname, 'trade_history/aggressive_state.json');
+    if (fs.existsSync(aggStatePath)) {
+      const aggState = JSON.parse(fs.readFileSync(aggStatePath, 'utf8'));
+      const aggPositions = Array.isArray(aggState.positions) ? aggState.positions : [];
+      const deployed = aggPositions.reduce((s, p) => s + Math.abs(parseFloat(p.market_value || p.mv || 0)), 0);
+      aggressive = { active: true, positions: aggPositions.length, deployed: Math.round(deployed) };
+    } else {
+      aggressive = { active: false, positions: 0, deployed: 0 };
+    }
+  } catch { aggressive = { active: false, positions: 0, deployed: 0 }; }
+
   return {
     time: etTime(),
     marketStatus: marketStatus(),
@@ -247,6 +262,7 @@ async function getStatus() {
     schedulerHalted: sched.isHalted,
     indices,
     lastNewsRun: getLastNewsRun(),
+    aggressive,
   };
 }
 
@@ -449,6 +465,7 @@ const HTML = `<!DOCTYPE html>
   <div style="display:flex;align-items:center;gap:12px;">
     <span class="halt-badge" id="halt-badge" title="Click to resume scheduler">&#9208; SCHEDULER HALTED</span>
     <button onclick="window.open('/news','_blank','width=1200,height=800')" style="padding:7px 18px;background:var(--accent);border:none;color:#fff;border-radius:5px;cursor:pointer;font-weight:bold;font-size:13px;letter-spacing:0.5px;transition:background 0.2s;" onmouseover="this.style.background='#448aff'" onmouseout="this.style.background='var(--accent)'">News</button>
+    <button onclick="window.open('/aggressive','_blank','width=1400,height=900')" style="padding:7px 18px;background:#ff6d00;border:none;color:#fff;border-radius:5px;cursor:pointer;font-weight:bold;font-size:13px;letter-spacing:0.5px;transition:background 0.2s;" onmouseover="this.style.background='#ff9100'" onmouseout="this.style.background='#ff6d00'">Aggressive</button>
     <div class="emergency-wrap" id="emergency-wrap">
       <button id="emergency-btn" onclick="toggleEmergencyMenu()" style="padding:7px 18px;background:var(--red);border:2px solid #ff1744;color:#fff;border-radius:5px;cursor:pointer;font-weight:bold;font-size:13px;letter-spacing:1px;transition:all 0.2s;text-transform:uppercase;box-shadow:0 0 12px rgba(255,23,68,0.4);" onmouseover="this.style.background='#ff1744';this.style.boxShadow='0 0 20px rgba(255,23,68,0.7)'" onmouseout="this.style.background='var(--red)';this.style.boxShadow='0 0 12px rgba(255,23,68,0.4)'">&#9888; EMERGENCY &#9660;</button>
       <div class="emergency-dropdown" id="emergency-dropdown">
@@ -583,6 +600,11 @@ const HTML = `<!DOCTYPE html>
       <div class="dot" id="dot-news"></div>
       <div class="status-label">News Scraper</div>
       <div class="status-sub" id="status-news">—</div>
+    </div>
+    <div class="status-row">
+      <div class="dot" id="dot-aggressive"></div>
+      <div class="status-label">Aggressive Engine</div>
+      <div class="status-sub" id="status-aggressive">—</div>
     </div>
     <div class="divider"></div>
     <div class="panel-title" style="margin-bottom:8px">Next Trade Cycle</div>
@@ -822,6 +844,21 @@ async function refresh() {
     } else {
       setDot('dot-news', 'yellow');
       document.getElementById('status-news').textContent = 'Not yet run';
+    }
+
+    // Aggressive engine status
+    if (data.aggressive) {
+      const agg = data.aggressive;
+      if (agg.active) {
+        setDot('dot-aggressive', agg.positions > 0 ? 'green' : 'yellow');
+        document.getElementById('status-aggressive').textContent = agg.positions + ' pos | $' + (agg.deployed||0).toLocaleString();
+      } else {
+        setDot('dot-aggressive', 'red');
+        document.getElementById('status-aggressive').textContent = 'Inactive';
+      }
+    } else {
+      setDot('dot-aggressive', 'yellow');
+      document.getElementById('status-aggressive').textContent = 'No data';
     }
 
     // Countdown
@@ -1389,6 +1426,394 @@ loadNews();
 </body>
 </html>`;
 
+// ─── Aggressive Engine Data ─────────────────────────────────────────────────
+const AGG_STATE_PATH  = path.join(__dirname, 'trade_history/aggressive_state.json');
+const PERF_LEDGER     = path.join(__dirname, 'trade_history/performance_ledger.json');
+const AGG_ALLOCATION  = 10000;
+
+async function getAggressiveData() {
+  // 1. Read aggressive state file
+  let aggState = { positions: [], dailyTrades: [] };
+  try {
+    if (fs.existsSync(AGG_STATE_PATH)) {
+      aggState = JSON.parse(fs.readFileSync(AGG_STATE_PATH, 'utf8'));
+    }
+  } catch {}
+
+  // 2. Get live Alpaca positions tagged as aggressive
+  let livePositions = [];
+  try {
+    const allPositions = await alpaca('GET', '/positions');
+    if (Array.isArray(allPositions)) {
+      // If aggressive_state has positions, match by symbol
+      const aggSymbols = new Set((aggState.positions || []).map(p => p.symbol));
+      livePositions = allPositions.filter(p => aggSymbols.has(p.symbol)).map(p => {
+        const qty = parseFloat(p.qty || 0);
+        const entry = parseFloat(p.avg_entry_price || 0);
+        const curr = parseFloat(p.current_price || 0);
+        const pnl = parseFloat(p.unrealized_pl || 0);
+        const pnlPct = parseFloat(p.unrealized_plpc || 0) * 100;
+        const mv = parseFloat(p.market_value || 0);
+        // Find entry time from aggState
+        const statePos = (aggState.positions || []).find(sp => sp.symbol === p.symbol);
+        const entryTime = statePos?.entryTime || statePos?.entry_time || null;
+        const strategy = statePos?.strategy || statePos?.buyReason || 'aggressive';
+        return {
+          symbol: p.symbol, qty, entry: entry.toFixed(2), current: curr.toFixed(2),
+          pnl: pnl.toFixed(2), pnlPct: pnlPct.toFixed(2), mv: mv.toFixed(2),
+          entryTime, strategy, status: 'OPEN',
+        };
+      });
+    }
+  } catch {}
+
+  // If no live positions found, fall back to state file positions
+  if (livePositions.length === 0 && Array.isArray(aggState.positions) && aggState.positions.length > 0) {
+    livePositions = aggState.positions.map(p => ({
+      symbol: p.symbol,
+      qty: p.qty || 0,
+      entry: parseFloat(p.entry_price || p.entryPrice || 0).toFixed(2),
+      current: parseFloat(p.current_price || p.currentPrice || 0).toFixed(2),
+      pnl: parseFloat(p.pnl || p.unrealized_pl || 0).toFixed(2),
+      pnlPct: parseFloat(p.pnlPct || p.unrealized_plpc || 0).toFixed(2),
+      mv: parseFloat(p.market_value || p.mv || 0).toFixed(2),
+      entryTime: p.entryTime || p.entry_time || null,
+      strategy: p.strategy || p.buyReason || 'aggressive',
+      status: 'OPEN',
+    }));
+  }
+
+  // 3. Read performance ledger for aggressive trades
+  let allTrades = [];
+  try {
+    if (fs.existsSync(PERF_LEDGER)) {
+      const ledger = JSON.parse(fs.readFileSync(PERF_LEDGER, 'utf8'));
+      allTrades = (ledger.trades || []).filter(t => t.isAggressive || t.is_aggressive);
+    }
+  } catch {}
+
+  // 4. Compute stats
+  const deployed = livePositions.reduce((s, p) => s + Math.abs(parseFloat(p.mv || 0)), 0);
+  const today = new Date().toISOString().slice(0, 10);
+  const todayTrades = (aggState.dailyTrades || allTrades).filter(t => {
+    const tDate = (t.exit_time || t.exitTime || t.entry_time || t.entryTime || '').slice(0, 10);
+    return tDate === today;
+  });
+  const todayPnl = todayTrades.reduce((s, t) => s + parseFloat(t.pnl_dollar || t.pnlDollar || 0), 0);
+  const totalPnl = allTrades.reduce((s, t) => s + parseFloat(t.pnl_dollar || t.pnlDollar || 0), 0);
+
+  const wins = allTrades.filter(t => t.is_win || t.isWin);
+  const losses = allTrades.filter(t => !t.is_win && !t.isWin);
+  const winRate = allTrades.length > 0 ? (wins.length / allTrades.length * 100) : 0;
+  const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + parseFloat(t.pnl_pct || t.pnlPct || 0), 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + parseFloat(t.pnl_pct || t.pnlPct || 0), 0) / losses.length : 0;
+
+  // 5. Signals pipeline from state
+  const signals = Array.isArray(aggState.signals) ? aggState.signals : [];
+
+  // 6. Recent trades (last 10)
+  const recentTrades = allTrades.slice(-10).reverse().map(t => ({
+    symbol: t.symbol,
+    pnl: parseFloat(t.pnl_dollar || t.pnlDollar || 0).toFixed(2),
+    pnlPct: parseFloat(t.pnl_pct || t.pnlPct || 0).toFixed(2),
+    exitReason: t.exit_reason || t.exitReason || '',
+    exitTime: t.exit_time || t.exitTime || '',
+  }));
+
+  return {
+    allocation: AGG_ALLOCATION,
+    deployed: Math.round(deployed),
+    positions: livePositions,
+    todayTrades: todayTrades.length,
+    todayPnl: parseFloat(todayPnl.toFixed(2)),
+    totalPnl: parseFloat(totalPnl.toFixed(2)),
+    signals,
+    winRate: parseFloat(winRate.toFixed(1)),
+    avgWin: parseFloat(avgWin.toFixed(2)),
+    avgLoss: parseFloat(avgLoss.toFixed(2)),
+    recentTrades,
+  };
+}
+
+// ─── Aggressive Engine Page HTML ────────────────────────────────────────────
+const AGGRESSIVE_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aggressive Engine — Algo Trader</title>
+<style>
+  :root { --bg:#060b11; --panel:#0e1824; --border:#1e3050; --accent:#ff6d00; --green:#00e676; --red:#ff5252; --yellow:#ffca28; --text:#ddeeff; --dim:#556b8a; --bright:#ffffff; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI','Courier New',monospace; font-size:13px; }
+
+  .top-bar { background:var(--panel); border-bottom:2px solid var(--accent); padding:14px 24px; display:flex; align-items:center; justify-content:space-between; }
+  .top-bar h1 { font-size:16px; color:var(--bright); font-weight:700; }
+  .top-bar h1 span { color:var(--accent); }
+  .top-bar .alloc { color:var(--dim); font-size:13px; margin-left:16px; }
+  .top-bar .alloc strong { color:var(--accent); font-size:14px; }
+  .top-bar .info { color:var(--dim); font-size:12px; }
+  .btn { padding:6px 14px; border:none; border-radius:4px; cursor:pointer; font-size:12px; font-weight:bold; transition:opacity 0.2s; }
+  .btn:hover { opacity:0.85; }
+  .btn-accent { background:var(--accent); color:#fff; }
+
+  .stats-bar { display:flex; gap:12px; padding:12px 24px; flex-wrap:wrap; }
+  .stat-card { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:12px 18px; min-width:140px; flex:1; }
+  .stat-card .label { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
+  .stat-card .value { font-size:22px; font-weight:bold; color:var(--bright); }
+  .stat-card .value.green { color:var(--green); }
+  .stat-card .value.red { color:var(--red); }
+  .stat-card .value.orange { color:var(--accent); }
+
+  .content { display:grid; grid-template-columns:1fr 380px; gap:16px; padding:16px 24px; height:calc(100vh - 160px); }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:6px; overflow:hidden; display:flex; flex-direction:column; }
+  .panel-header { padding:10px 16px; border-bottom:1px solid var(--border); font-weight:bold; font-size:13px; color:var(--bright); display:flex; justify-content:space-between; align-items:center; }
+  .panel-header .badge { background:rgba(255,109,0,0.15); color:var(--accent); border:1px solid rgba(255,109,0,0.3); padding:2px 8px; border-radius:3px; font-size:10px; font-weight:bold; text-transform:uppercase; }
+  .panel-body { overflow-y:auto; flex:1; padding:0; }
+
+  /* Tables */
+  table { width:100%; border-collapse:collapse; }
+  th { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:0.5px; padding:8px 10px; text-align:right; border-bottom:1px solid var(--border); font-weight:600; }
+  th:first-child { text-align:left; }
+  td { padding:7px 10px; text-align:right; border-bottom:1px solid rgba(30,48,80,0.5); font-variant-numeric:tabular-nums; font-size:13px; color:var(--text); }
+  td:first-child { text-align:left; color:var(--bright); font-weight:bold; font-size:14px; }
+  tr:hover td { background:rgba(255,109,0,0.05); }
+  .pos { color:var(--green); }
+  .neg { color:var(--red); }
+
+  /* Countdown badge */
+  .hold-badge { display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; font-weight:bold; }
+  .hold-ok { background:rgba(0,230,118,0.12); color:var(--green); border:1px solid rgba(0,230,118,0.25); }
+  .hold-warn { background:rgba(255,202,40,0.12); color:var(--yellow); border:1px solid rgba(255,202,40,0.25); }
+  .hold-danger { background:rgba(255,82,82,0.12); color:var(--red); border:1px solid rgba(255,82,82,0.25); }
+
+  /* Signal rows */
+  .signal-row { padding:8px 16px; border-bottom:1px solid rgba(30,48,80,0.4); display:flex; align-items:center; gap:10px; }
+  .signal-row:hover { background:rgba(255,109,0,0.04); }
+  .signal-ticker { font-size:14px; font-weight:bold; color:var(--bright); min-width:50px; }
+  .signal-score { font-size:16px; font-weight:bold; color:var(--accent); min-width:36px; text-align:right; }
+  .signal-meta { font-size:11px; color:var(--dim); flex:1; }
+  .signal-dir { display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; font-weight:bold; text-transform:uppercase; }
+  .signal-dir.bull { background:rgba(0,230,118,0.12); color:var(--green); }
+  .signal-dir.bear { background:rgba(255,82,82,0.12); color:var(--red); }
+
+  /* Trade rows */
+  .trade-row { padding:6px 16px; border-bottom:1px solid rgba(30,48,80,0.4); display:flex; align-items:center; justify-content:space-between; font-size:12px; }
+  .trade-row:hover { background:rgba(255,109,0,0.04); }
+  .trade-sym { font-weight:bold; color:var(--bright); min-width:50px; }
+  .trade-pnl { font-weight:bold; min-width:70px; text-align:right; }
+  .trade-reason { color:var(--dim); font-size:11px; }
+  .trade-time { color:var(--dim); font-size:11px; min-width:70px; text-align:right; }
+
+  .empty-state { text-align:center; padding:40px 20px; color:var(--dim); }
+  .empty-state .icon { font-size:32px; margin-bottom:8px; }
+
+  .right-col { display:flex; flex-direction:column; gap:16px; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width:6px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+  ::-webkit-scrollbar-thumb:hover { background:#2a4a70; }
+
+  .spinner { display:inline-block; width:20px; height:20px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <div style="display:flex;align-items:center;">
+    <h1><span>&#9889;</span> Aggressive Engine Dashboard</h1>
+    <span class="alloc">Allocation: <strong id="alloc-display">$10,000 (10%)</strong></span>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center;">
+    <span class="info" id="last-update">Loading...</span>
+    <button class="btn btn-accent" onclick="loadData()">Refresh</button>
+  </div>
+</div>
+
+<div class="stats-bar" id="stats-bar">
+  <div class="stat-card"><div class="label">Deployed Capital</div><div class="value orange" id="stat-deployed">-</div></div>
+  <div class="stat-card"><div class="label">Today's P&amp;L</div><div class="value" id="stat-today-pnl">-</div></div>
+  <div class="stat-card"><div class="label">Total P&amp;L</div><div class="value" id="stat-total-pnl">-</div></div>
+  <div class="stat-card"><div class="label">Win Rate</div><div class="value" id="stat-winrate">-</div></div>
+  <div class="stat-card"><div class="label">Active Positions</div><div class="value orange" id="stat-positions">-</div></div>
+  <div class="stat-card"><div class="label">Today's Trades</div><div class="value" id="stat-today-trades">-</div></div>
+</div>
+
+<div class="content">
+  <div class="panel">
+    <div class="panel-header">
+      <span>Active Positions</span>
+      <span class="badge" id="pos-count-badge">0</span>
+    </div>
+    <div class="panel-body" id="positions-table">
+      <div class="empty-state"><div class="spinner"></div><br>Loading...</div>
+    </div>
+  </div>
+
+  <div class="right-col">
+    <div class="panel" style="flex:1;">
+      <div class="panel-header">
+        <span>Signal Pipeline</span>
+        <span class="badge" id="signal-count-badge">0</span>
+      </div>
+      <div class="panel-body" id="signals-list">
+        <div class="empty-state"><div class="spinner"></div><br>Loading...</div>
+      </div>
+    </div>
+
+    <div class="panel" style="flex:1;">
+      <div class="panel-header">
+        <span>Recent Trades</span>
+        <span class="badge" id="trade-count-badge">0</span>
+      </div>
+      <div class="panel-body" id="trades-list">
+        <div class="empty-state"><div class="spinner"></div><br>Loading...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function fmt(v) { return parseFloat(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}); }
+function fmtDollar(v) { return '$' + fmt(Math.abs(v)); }
+function sign(v) { return v >= 0 ? '+' : ''; }
+function pnlClass(v) { return parseFloat(v) >= 0 ? 'pos' : 'neg'; }
+
+function holdTime(entryTime) {
+  if (!entryTime) return { text: '--', hoursLeft: 48 };
+  const ms = Date.now() - new Date(entryTime).getTime();
+  const hours = ms / 3600000;
+  const hoursLeft = Math.max(0, 48 - hours);
+  if (hours < 1) return { text: Math.floor(ms/60000) + 'm', hoursLeft };
+  if (hours < 48) return { text: hours.toFixed(1) + 'h', hoursLeft };
+  return { text: Math.floor(hours) + 'h', hoursLeft: 0 };
+}
+
+function holdBadge(hoursLeft) {
+  if (hoursLeft <= 0) return '<span class="hold-badge hold-danger">EXPIRED</span>';
+  if (hoursLeft <= 6) return '<span class="hold-badge hold-danger">' + hoursLeft.toFixed(1) + 'h left</span>';
+  if (hoursLeft <= 12) return '<span class="hold-badge hold-warn">' + hoursLeft.toFixed(1) + 'h left</span>';
+  return '<span class="hold-badge hold-ok">' + hoursLeft.toFixed(1) + 'h left</span>';
+}
+
+function renderPositions(positions) {
+  const el = document.getElementById('positions-table');
+  document.getElementById('pos-count-badge').textContent = positions.length;
+  if (!positions.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">&#128203;</div>No active aggressive positions</div>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Ticker</th><th>Qty</th><th>Entry</th><th>Current</th><th>P&L%</th><th>P&L$</th><th>Hold Time</th><th>Strategy</th><th>Status</th></tr></thead><tbody>';
+  for (const p of positions) {
+    const pnlPct = parseFloat(p.pnlPct);
+    const pnlDollar = parseFloat(p.pnl);
+    const cls = pnlClass(pnlPct);
+    const hold = holdTime(p.entryTime);
+    const strat = (p.strategy || '').length > 20 ? (p.strategy.slice(0,20) + '...') : (p.strategy || '-');
+    html += '<tr>'
+      + '<td>' + p.symbol + '</td>'
+      + '<td>' + p.qty + '</td>'
+      + '<td>$' + p.entry + '</td>'
+      + '<td>$' + p.current + '</td>'
+      + '<td class="' + cls + '">' + sign(pnlPct) + fmt(pnlPct) + '%</td>'
+      + '<td class="' + cls + '">' + sign(pnlDollar) + fmtDollar(pnlDollar) + '</td>'
+      + '<td>' + hold.text + ' ' + holdBadge(hold.hoursLeft) + '</td>'
+      + '<td style="font-size:11px;color:var(--dim);">' + strat + '</td>'
+      + '<td><span class="hold-badge hold-ok">' + (p.status || 'OPEN') + '</span></td>'
+      + '</tr>';
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function renderSignals(signals) {
+  const el = document.getElementById('signals-list');
+  document.getElementById('signal-count-badge').textContent = signals.length;
+  if (!signals.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">&#128225;</div>No signals in pipeline</div>';
+    return;
+  }
+  const sorted = signals.slice().sort((a, b) => (b.score || 0) - (a.score || 0));
+  el.innerHTML = sorted.map(s => {
+    const dirClass = (s.direction || '').toLowerCase() === 'bearish' ? 'bear' : 'bull';
+    return '<div class="signal-row">'
+      + '<span class="signal-ticker">' + (s.ticker || s.symbol || '?') + '</span>'
+      + '<span class="signal-score">' + (s.score || 0) + '</span>'
+      + '<span class="signal-meta">' + (s.source || s.strategy || '-') + '</span>'
+      + '<span class="signal-dir ' + dirClass + '">' + (s.direction || 'LONG') + '</span>'
+      + '</div>';
+  }).join('');
+}
+
+function renderTrades(trades) {
+  const el = document.getElementById('trades-list');
+  document.getElementById('trade-count-badge').textContent = trades.length;
+  if (!trades.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">&#128200;</div>No aggressive trades yet</div>';
+    return;
+  }
+  el.innerHTML = trades.map(t => {
+    const pnl = parseFloat(t.pnl);
+    const cls = pnlClass(pnl);
+    const time = t.exitTime ? new Date(t.exitTime).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '-';
+    return '<div class="trade-row">'
+      + '<span class="trade-sym">' + t.symbol + '</span>'
+      + '<span class="trade-reason">' + (t.exitReason || '-') + '</span>'
+      + '<span class="trade-time">' + time + '</span>'
+      + '<span class="trade-pnl ' + cls + '">' + sign(pnl) + fmtDollar(pnl) + ' (' + sign(parseFloat(t.pnlPct)) + t.pnlPct + '%)</span>'
+      + '</div>';
+  }).join('');
+}
+
+async function loadData() {
+  try {
+    const res = await fetch('/api/aggressive');
+    const data = await res.json();
+
+    // Allocation
+    document.getElementById('alloc-display').textContent = '$' + (data.allocation||10000).toLocaleString() + ' (10%)';
+
+    // Stats bar
+    document.getElementById('stat-deployed').textContent = '$' + (data.deployed||0).toLocaleString();
+    const todayPnl = data.todayPnl || 0;
+    const todayEl = document.getElementById('stat-today-pnl');
+    todayEl.textContent = sign(todayPnl) + fmtDollar(todayPnl);
+    todayEl.className = 'value ' + (todayPnl >= 0 ? 'green' : 'red');
+
+    const totalPnl = data.totalPnl || 0;
+    const totalEl = document.getElementById('stat-total-pnl');
+    totalEl.textContent = sign(totalPnl) + fmtDollar(totalPnl);
+    totalEl.className = 'value ' + (totalPnl >= 0 ? 'green' : 'red');
+
+    const wr = data.winRate || 0;
+    const wrEl = document.getElementById('stat-winrate');
+    wrEl.textContent = wr.toFixed(1) + '%';
+    wrEl.className = 'value ' + (wr >= 50 ? 'green' : wr >= 30 ? 'orange' : 'red');
+
+    document.getElementById('stat-positions').textContent = (data.positions||[]).length;
+    document.getElementById('stat-today-trades').textContent = data.todayTrades || 0;
+
+    // Panels
+    renderPositions(data.positions || []);
+    renderSignals(data.signals || []);
+    renderTrades(data.recentTrades || []);
+
+    document.getElementById('last-update').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    document.getElementById('last-update').textContent = 'Error: ' + e.message;
+  }
+}
+
+// Initial load + auto-refresh every 10s
+loadData();
+setInterval(loadData, 10000);
+</script>
+</body>
+</html>`;
+
 // ─── Server ─────────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   if (req.url === '/') {
@@ -1518,6 +1943,17 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
+  } else if (req.url === '/api/aggressive') {
+    try {
+      const data = await getAggressiveData();
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify(data));
+    } catch (e) {
+      res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
+    }
+  } else if (req.url === '/aggressive') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(AGGRESSIVE_HTML);
   } else if (req.url === '/api/news') {
     try {
       const data = await getNewsData();

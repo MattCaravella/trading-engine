@@ -15,6 +15,20 @@ const short_entry   = require('./strategies/short_entry');
 const { aggregateByTicker } = require('./signals');
 const { criticalAlert } = require('./alerts');
 
+// ─── Aggressive Sources (graceful fallback if files don't exist yet) ────────
+let gap_and_go, breakout_52wk, short_squeeze, pead, volume_anomaly, wsb_velocity, sec_8k, google_trends;
+const aggFallback = { getSignals: async () => [] };
+try { gap_and_go     = require('./strategies/gap_and_go'); }     catch { gap_and_go     = aggFallback; }
+try { breakout_52wk  = require('./strategies/breakout_52wk'); }  catch { breakout_52wk  = aggFallback; }
+try { short_squeeze  = require('./strategies/short_squeeze'); }  catch { short_squeeze  = aggFallback; }
+try { pead           = require('./strategies/pead'); }           catch { pead           = aggFallback; }
+try { volume_anomaly = require('./strategies/volume_anomaly'); } catch { volume_anomaly = aggFallback; }
+try { wsb_velocity   = require('./monitors/wsb_velocity'); }     catch { wsb_velocity   = aggFallback; }
+try { sec_8k         = require('./monitors/sec_8k'); }           catch { sec_8k         = aggFallback; }
+try { google_trends  = require('./monitors/google_trends'); }    catch { google_trends  = aggFallback; }
+
+const AGGRESSIVE_SOURCES = { gap_and_go, breakout_52wk, short_squeeze, pead, volume_anomaly, wsb_velocity, sec_8k, google_trends };
+
 const SLOW_SOURCES  = { congress, govcontracts, lobbying, insider_buying, downtrend, techsector };
 const FAST_SOURCES  = { bollinger, ma_crossover, relative_value, trending, flights };
 const NEWS_SOURCES  = { news_sentiment };  // Separate schedule: 8 AM + 12 PM
@@ -176,4 +190,44 @@ function getHealthStatus() {
   };
 }
 
-module.exports = { refreshSlow, refreshFast, refreshNews, refreshShort, getCandidates, getShortCandidates, cacheStatus, isSystemHealthy, getHealthStatus };
+// ─── Aggressive Signal Cache ────────────────────────────────────────────────
+const AGGRESSIVE_MAX_AGE = 30 * 60 * 1000;  // 30 minutes for aggressive signals
+
+let aggressiveCache = { signals: [], updatedAt: null };
+
+async function refreshAggressive() {
+  console.log('\n[Cache] Refreshing AGGRESSIVE sources...');
+  const signals = [];
+  const ts = Date.now();
+  let fails = 0;
+  let loaded = 0;
+  const total = Object.keys(AGGRESSIVE_SOURCES).length;
+  await Promise.allSettled(Object.entries(AGGRESSIVE_SOURCES).map(async ([name, mod]) => {
+    try {
+      const s = await mod.getSignals();
+      if (s.length > 0) loaded++;
+      for (const sig of s) signals.push({ ...sig, source: name, _generatedAt: ts });
+      console.log(`  [${name}] ${s.length} signal(s)`);
+    } catch (e) {
+      fails++;
+      console.warn(`  [${name}] failed: ${e.message}`);
+    }
+  }));
+  aggressiveCache = { signals, updatedAt: new Date() };
+  console.log(`[Cache] AGGRESSIVE updated — ${signals.length} signals from ${loaded}/${total} sources${fails > 0 ? ` (${fails} failed)` : ''}`);
+}
+
+function getAggressiveCandidates() {
+  const now = Date.now();
+  // Filter out stale signals (> 30 min)
+  const fresh = aggressiveCache.signals.filter(s => !s._generatedAt || (now - s._generatedAt) < AGGRESSIVE_MAX_AGE);
+  const staleCount = aggressiveCache.signals.length - fresh.length;
+  if (staleCount > 0) {
+    console.log(`  [Cache] Dropped ${staleCount} stale aggressive signals`);
+  }
+  if (fresh.length === 0) return [];
+  // Aggregate by ticker and return top 20 sorted by score
+  return aggregateByTicker(fresh).slice(0, 20);
+}
+
+module.exports = { refreshSlow, refreshFast, refreshNews, refreshShort, refreshAggressive, getCandidates, getShortCandidates, getAggressiveCandidates, cacheStatus, isSystemHealthy, getHealthStatus };
