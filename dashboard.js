@@ -1975,23 +1975,30 @@ function renderPositions(positions) {
     el.innerHTML = '<div class="empty-state"><div class="icon">&#128203;</div>No active aggressive positions</div>';
     return;
   }
-  let html = '<table><thead><tr><th>Ticker</th><th>Qty</th><th>Entry</th><th>Current</th><th>P&L%</th><th>P&L$</th><th>Hold Time</th><th>Strategy</th><th>Status</th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>Ticker</th><th>Qty</th><th>Entry</th><th>Current</th><th>Value</th><th>P&L</th><th>Hold</th><th>Strategy</th></tr></thead><tbody>';
   for (const p of positions) {
-    const pnlPct = parseFloat(p.pnlPct);
-    const pnlDollar = parseFloat(p.pnl);
-    const cls = pnlClass(pnlPct);
+    const pnlPct = parseFloat(p.pnlPct || 0);
+    const pnlDollar = parseFloat(p.pnl || 0);
+    const up = pnlPct >= 0;
+    const arrow = up ? '▲' : '▼';
+    const priceUp = parseFloat(p.current) >= parseFloat(p.entry);
+    const priceArrow = '<span style="color:' + (priceUp ? 'var(--green)' : 'var(--red)') + ';margin-left:4px">' + (priceUp ? '▲' : '▼') + '</span>';
+    const pnlBadge = up
+      ? '<span style="display:inline-block;padding:2px 8px;border-radius:4px;background:rgba(0,230,118,0.12);border:1px solid rgba(0,230,118,0.3);color:var(--green);font-weight:bold;font-size:12px">' + arrow + ' +' + fmt(pnlPct) + '%</span>'
+      : '<span style="display:inline-block;padding:2px 8px;border-radius:4px;background:rgba(255,82,82,0.12);border:1px solid rgba(255,82,82,0.3);color:var(--red);font-weight:bold;font-size:12px">' + arrow + ' ' + fmt(pnlPct) + '%</span>';
+    const pnlDollarStr = '<span style="font-size:11px;color:' + (up?'var(--green)':'var(--red)') + '">' + sign(pnlDollar) + '$' + fmt(Math.abs(pnlDollar)) + '</span>';
     const hold = holdTime(p.entryTime);
-    const strat = (p.strategy || '').length > 20 ? (p.strategy.slice(0,20) + '...') : (p.strategy || '-');
+    const mv = parseFloat(p.mv || 0);
+    const strat = '<span style="display:inline-block;padding:1px 6px;border-radius:3px;background:rgba(255,109,0,0.1);border:1px solid rgba(255,109,0,0.3);color:#ff6d00;font-size:10px;font-weight:bold">' + (p.strategy || '-') + '</span>';
     html += '<tr>'
-      + '<td>' + p.symbol + '</td>'
+      + '<td style="font-weight:bold;color:var(--bright)">' + p.symbol + '</td>'
       + '<td>' + p.qty + '</td>'
       + '<td>$' + p.entry + '</td>'
-      + '<td>$' + p.current + '</td>'
-      + '<td class="' + cls + '">' + sign(pnlPct) + fmt(pnlPct) + '%</td>'
-      + '<td class="' + cls + '">' + sign(pnlDollar) + fmtDollar(pnlDollar) + '</td>'
+      + '<td>$' + p.current + priceArrow + '</td>'
+      + '<td>$' + Math.abs(Math.round(mv)).toLocaleString() + '</td>'
+      + '<td>' + pnlBadge + '<br>' + pnlDollarStr + '</td>'
       + '<td>' + hold.text + ' ' + holdBadge(hold.hoursLeft) + '</td>'
-      + '<td style="font-size:11px;color:var(--dim);">' + strat + '</td>'
-      + '<td><span class="hold-badge hold-ok">' + (p.status || 'OPEN') + '</span></td>'
+      + '<td>' + strat + '</td>'
       + '</tr>';
   }
   html += '</tbody></table>';
