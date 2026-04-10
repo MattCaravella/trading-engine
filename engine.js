@@ -26,16 +26,15 @@ const COOLDOWN_HOURS = 24;
 const BUY_THRESHOLD  = 65;
 
 // ─── Strategy-specific exit templates ────────────────────────────────────────
-// Based on 653-trade seed analysis: hard stops lost 100%, time exits won 88.7%
-// Key changes: ATR-based stops replace fixed %, time limits added, breakeven stop at +3%
+// Mean reversion needs wider stops and no fixed profit target (let trail handle it)
+// Trend-following needs moderate stops and room to run
+// Relative value uses tighter stops with a fixed profit target
 const EXIT_PROFILES = {
-  mean_reversion: { atrMult: 2.0, trail: 8, profitTarget: null, maxHoldHours: 96,  label: 'mean-reversion' },  // 4 trading days
-  trend:          { atrMult: 1.5, trail: 6, profitTarget: null, maxHoldHours: 168, label: 'trend' },            // 7 trading days
-  relative_value: { atrMult: 1.5, trail: 5, profitTarget: 10,  maxHoldHours: 120, label: 'relative-value' },   // 5 trading days
-  default:        { atrMult: 1.5, trail: 6, profitTarget: 12,  maxHoldHours: 120, label: 'default' },
+  mean_reversion: { hardStop: 10, trail: 8, profitTarget: null,  label: 'mean-reversion' },  // downtrend, bollinger
+  trend:          { hardStop: 8,  trail: 6, profitTarget: null,  label: 'trend' },            // ma_crossover
+  relative_value: { hardStop: 6,  trail: 5, profitTarget: 10,    label: 'relative-value' },   // relative_value
+  default:        { hardStop: 8,  trail: 6, profitTarget: 12,    label: 'default' },           // insider, techsector, etc
 };
-const MAX_HARD_STOP = 12;         // Absolute maximum stop regardless of ATR (prevents catastrophic loss)
-const BREAKEVEN_TRIGGER = 3;      // Move stop to breakeven after +3% unrealized profit
 
 const SOURCE_TO_PROFILE = {
   downtrend: 'mean_reversion', bollinger: 'mean_reversion',
@@ -47,9 +46,10 @@ function getExitProfile(source) {
   return EXIT_PROFILES[SOURCE_TO_PROFILE[source] || 'default'];
 }
 
-// Legacy constants kept for overnight trailing stop placement and governor
-const TRAIL_PERCENT  = 8;
-const HARD_STOP_PCT  = 12;
+// Legacy constants kept as absolute maximums
+const TRAIL_PERCENT  = 8;     // max trailing stop (used for overnight placement)
+const HARD_STOP_PCT  = 10;    // absolute max hard stop
+const PROFIT_TARGET  = 12;    // absolute max profit target
 
 const STATE_FILE = path.join(__dirname, 'trade_history/engine_state.json');
 
@@ -138,9 +138,9 @@ async function getVolatilityAdjustedSize(ticker, baseSize) {
   }
 }
 
-async function getATRStop(ticker, multiplier = 1.5) {
-  const MIN_STOP = 3;   // 3% minimum stop distance
-  const MAX_STOP = 12;  // 12% maximum — aligned with MAX_HARD_STOP
+async function getATRStop(ticker, multiplier = 2.0) {
+  const MIN_STOP = 3;  // 3% minimum stop distance
+  const MAX_STOP = 10; // 10% maximum stop distance
   try {
     const { getBars } = require('./data/prices');
     const bars = await getBars(ticker, 20);
@@ -341,51 +341,22 @@ async function runTradeCycle(getCandidatesFn) {
       const profile = getExitProfile(source);
       console.log(`  ${ticker.padEnd(6)} entry=$${entry.toFixed(2)} P&L=${pnlPct.toFixed(2)}% [${profile.label}]`);
 
-      // Track peak P&L for breakeven stop logic
-      if (!state.peakPnl) state.peakPnl = {};
-      if (!state.peakPnl[ticker] || pnlPct > state.peakPnl[ticker]) state.peakPnl[ticker] = pnlPct;
-      const peakPnl = state.peakPnl[ticker] || 0;
-
-      // 1. Profit target — only if the profile has one (mean reversion + trend let trail handle it)
+      // Profit target — only if the profile has one (mean reversion and trend use trail instead)
       if (profile.profitTarget && pnlPct >= profile.profitTarget) {
         const sell = await alpaca('POST','/orders',{symbol:ticker,qty:pos.qty,side:'sell',type:'market',time_in_force:'day'});
         if (sell.id) { logTrade({...sell,engine_reason:`Profit target (${profile.label}): +${pnlPct.toFixed(2)}%`}); console.log(`  [PROFIT TAKE] ${ticker} +${pnlPct.toFixed(2)}% (${profile.label} target=${profile.profitTarget}%)`); infoAlert('Profit Target Hit', `${ticker} hit +${pnlPct.toFixed(2)}%`, { ticker, pnlPct: '+' + pnlPct.toFixed(2) + '%', target: profile.profitTarget + '%', profile: profile.label }); }
         if (state.positionSources) delete state.positionSources[ticker];
-        if (state.peakPnl) delete state.peakPnl[ticker];
         continue;
       }
 
-      // 2. Time-based exit — signals are time-decaying catalysts (88.7% WR in seed data)
-      const holdMs = Date.now() - new Date(pos.created_at || 0).getTime();
-      const holdHours = holdMs / 3600000;
-      if (profile.maxHoldHours && holdHours > profile.maxHoldHours && pnlPct > 0) {
-        const sell = await alpaca('POST','/orders',{symbol:ticker,qty:pos.qty,side:'sell',type:'market',time_in_force:'day'});
-        if (sell.id) { logTrade({...sell,engine_reason:`Time exit (${profile.label}): ${holdHours.toFixed(0)}h > ${profile.maxHoldHours}h, P&L=+${pnlPct.toFixed(2)}%`}); console.log(`  [TIME EXIT] ${ticker} +${pnlPct.toFixed(2)}% after ${holdHours.toFixed(0)}h (${profile.label} max=${profile.maxHoldHours}h)`); infoAlert('Time Exit', `${ticker} exited at +${pnlPct.toFixed(2)}% after ${holdHours.toFixed(0)}h`, { ticker, holdHours: holdHours.toFixed(0), maxHours: profile.maxHoldHours }); }
-        if (state.positionSources) delete state.positionSources[ticker];
-        if (state.peakPnl) delete state.peakPnl[ticker];
-        continue;
-      }
-
-      // 3. Breakeven stop — if position peaked at +3% but dropped back to 0%, exit to protect capital
-      if (peakPnl >= BREAKEVEN_TRIGGER && pnlPct <= 0) {
-        const sell = await alpaca('POST','/orders',{symbol:ticker,qty:pos.qty,side:'sell',type:'market',time_in_force:'day'});
-        if (sell.id) { logTrade({...sell,engine_reason:`Breakeven stop (${profile.label}): peaked at +${peakPnl.toFixed(2)}%, now ${pnlPct.toFixed(2)}%`}); console.log(`  [BREAKEVEN] ${ticker} peaked +${peakPnl.toFixed(1)}%, now ${pnlPct.toFixed(1)}% — exiting at breakeven`); warningAlert('Breakeven Stop', `${ticker} peaked +${peakPnl.toFixed(1)}% but dropped to ${pnlPct.toFixed(1)}%`, { ticker, peakPnl: peakPnl.toFixed(1) + '%', currentPnl: pnlPct.toFixed(1) + '%' }); }
-        if(!state.stoppedOut) state.stoppedOut = {};
-        state.stoppedOut[ticker] = now;
-        if (state.positionSources) delete state.positionSources[ticker];
-        if (state.peakPnl) delete state.peakPnl[ticker];
-        continue;
-      }
-
-      // 4. ATR-based hard stop — adapts to each stock's volatility (replaces fixed % stops)
-      const atrStop = await getATRStop(ticker, profile.atrMult);
-      const effectiveStop = Math.min(atrStop, MAX_HARD_STOP);
-      console.log(`  [STOP] ${ticker}: ATR=${atrStop.toFixed(1)}% (${profile.atrMult}x), cap=${MAX_HARD_STOP}%, effective=${effectiveStop.toFixed(1)}%`);
+      // Hard stop — strategy-specific, with ATR adjustment
+      const atrStop = await getATRStop(ticker);
+      const effectiveStop = Math.min(atrStop, profile.hardStop);
+      console.log(`  [STOP] ${ticker}: ATR=${atrStop.toFixed(1)}%, profile-max=${profile.hardStop}%, effective=${effectiveStop.toFixed(1)}%`);
       if (pnlPct <= -effectiveStop) {
         const sell = await alpaca('POST','/orders',{symbol:ticker,qty:pos.qty,side:'sell',type:'market',time_in_force:'day'});
-        if (sell.id) { logTrade({...sell,engine_reason:`ATR stop (${profile.label}, ${atrStop.toFixed(1)}%): ${pnlPct.toFixed(2)}%`}); console.log(`  [ATR STOP] ${ticker} at ${effectiveStop.toFixed(1)}% (${profile.label})`); warningAlert('ATR Stop Hit', `${ticker} stopped out at ${pnlPct.toFixed(2)}%`, { ticker, pnlPct: pnlPct.toFixed(2) + '%', atrStop: atrStop.toFixed(1) + '%', profile: profile.label }); if(!state.stoppedOut)state.stoppedOut={}; state.stoppedOut[ticker]=now; }
+        if (sell.id) { logTrade({...sell,engine_reason:`Stop (${profile.label}, ATR=${atrStop.toFixed(1)}%): ${pnlPct.toFixed(2)}%`}); console.log(`  [HARD STOP] ${ticker} at ${effectiveStop.toFixed(1)}% (${profile.label})`); warningAlert('Hard Stop Hit', `${ticker} stopped out at ${pnlPct.toFixed(2)}%`, { ticker, pnlPct: pnlPct.toFixed(2) + '%', stopLevel: effectiveStop.toFixed(1) + '%', profile: profile.label }); if(!state.stoppedOut)state.stoppedOut={}; state.stoppedOut[ticker]=now; }
         if (state.positionSources) delete state.positionSources[ticker];
-        if (state.peakPnl) delete state.peakPnl[ticker];
         continue;
       }
 

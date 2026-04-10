@@ -73,16 +73,12 @@ function estimateSlippage(ticker, orderValue, bars) {
 }
 
 // Strategy-specific exit profiles (must match engine.js EXIT_PROFILES)
-// ATR-based stops: atrMult replaces fixed hardStop. Time exits at maxHoldHours.
-// Breakeven stop: exit at breakeven if position peaked +3% but dropped back to 0%.
 const EXIT_PROFILES = {
-  mean_reversion: { atrMult: 2.0, trail: 8, profitTarget: null, maxHoldHours: 96  },
-  trend:          { atrMult: 1.5, trail: 6, profitTarget: null, maxHoldHours: 168 },
-  relative_value: { atrMult: 1.5, trail: 5, profitTarget: 10,  maxHoldHours: 120 },
-  default:        { atrMult: 1.5, trail: 6, profitTarget: 12,  maxHoldHours: 120 },
+  mean_reversion: { hardStop: 10, trail: 8, profitTarget: null  },
+  trend:          { hardStop: 8,  trail: 6, profitTarget: null  },
+  relative_value: { hardStop: 6,  trail: 5, profitTarget: 10   },
+  default:        { hardStop: 8,  trail: 6, profitTarget: 12   },
 };
-const MAX_HARD_STOP = 12;
-const BREAKEVEN_TRIGGER = 3;
 const SOURCE_TO_PROFILE = {
   downtrend: 'mean_reversion', bollinger: 'mean_reversion',
   ma_crossover: 'trend', relative_value: 'relative_value',
@@ -490,12 +486,10 @@ async function runBacktest(startDate, endDate, initialCapital) {
       const highPrice    = todayBar.h;
       const lowPrice     = todayBar.l;
 
-      // Update peak price and peak P&L
+      // Update peak price using today's high
       if (highPrice > pos.peakPrice) pos.peakPrice = highPrice;
-      const pnlPct = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
-      if (!pos.peakPnlPct || pnlPct > pos.peakPnlPct) pos.peakPnlPct = pnlPct;
 
-      // 1. Profit target — only if the profile has one
+      // Check profit target — only if the profile has one
       if (profile.profitTarget) {
         const highPnl = ((highPrice - pos.entryPrice) / pos.entryPrice) * 100;
         if (highPnl >= profile.profitTarget) {
@@ -505,52 +499,15 @@ async function runBacktest(startDate, endDate, initialCapital) {
         }
       }
 
-      // 2. Time-based exit — exit profitable positions after maxHoldHours
-      if (profile.maxHoldHours) {
-        const entryDate = new Date(pos.entryDate);
-        const todayDate = new Date(today);
-        const holdDays = (todayDate - entryDate) / 86400000;
-        const holdHours = holdDays * 6.5; // ~6.5 trading hours per day
-        if (holdHours > profile.maxHoldHours && pnlPct > 0) {
-          const exitPrice = currentPrice * (1 - EXIT_SLIPPAGE_PCT / 100);
-          toClose.push({ idx: i, exitPrice, reason: 'time_exit' });
-          continue;
-        }
-      }
-
-      // 3. Breakeven stop — if peaked +3% but dropped back to 0%
-      if ((pos.peakPnlPct || 0) >= BREAKEVEN_TRIGGER && pnlPct <= 0) {
-        const exitPrice = pos.entryPrice * (1 - EXIT_SLIPPAGE_PCT / 100); // exit near entry
-        toClose.push({ idx: i, exitPrice, reason: 'breakeven_stop' });
-        continue;
-      }
-
-      // 4. ATR-based hard stop (replaces fixed % stop)
-      const historicalBars = barsUpTo(tickerBars, today);
-      let atrStop = MAX_HARD_STOP; // fallback
-      if (historicalBars.length >= 14) {
-        const atrBars = historicalBars.slice(-14);
-        let atrSum = 0;
-        for (let j = 0; j < atrBars.length; j++) {
-          const tr = Math.max(
-            atrBars[j].h - atrBars[j].l,
-            j > 0 ? Math.abs(atrBars[j].h - atrBars[j-1].c) : 0,
-            j > 0 ? Math.abs(atrBars[j].l - atrBars[j-1].c) : 0
-          );
-          atrSum += tr;
-        }
-        const atr = atrSum / 14;
-        const price = historicalBars[historicalBars.length - 1].c;
-        atrStop = Math.max(3, Math.min(MAX_HARD_STOP, (atr * (profile.atrMult || 1.5)) / price * 100));
-      }
+      // Check hard stop (strategy-specific)
       const lowPnl = ((lowPrice - pos.entryPrice) / pos.entryPrice) * 100;
-      if (lowPnl <= -atrStop) {
-        const exitPrice = pos.entryPrice * (1 - atrStop / 100) * (1 - EXIT_SLIPPAGE_PCT / 100);
-        toClose.push({ idx: i, exitPrice, reason: 'atr_stop' });
+      if (lowPnl <= -profile.hardStop) {
+        const exitPrice = pos.entryPrice * (1 - profile.hardStop / 100) * (1 - EXIT_SLIPPAGE_PCT / 100);
+        toClose.push({ idx: i, exitPrice, reason: 'hard_stop' });
         continue;
       }
 
-      // 5. Trailing stop (from peak, strategy-specific)
+      // Check trailing stop (strategy-specific, from peak)
       const trailDrop = ((pos.peakPrice - lowPrice) / pos.peakPrice) * 100;
       if (trailDrop >= profile.trail && pos.peakPrice > pos.entryPrice * 1.01) {
         const exitPrice = pos.peakPrice * (1 - profile.trail / 100) * (1 - EXIT_SLIPPAGE_PCT / 100);
