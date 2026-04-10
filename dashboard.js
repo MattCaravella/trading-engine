@@ -973,6 +973,10 @@ async function refresh() {
     if (closed.length === 0) {
       closedBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:12px">No closes today</td></tr>';
     } else {
+      const totalDollar = closed.reduce((s, t) => s + parseFloat(t.pnlDollar || 0), 0);
+      const totalUp = totalDollar >= 0;
+      const wins = closed.filter(t => parseFloat(t.pnlPct) > 0).length;
+      const losses = closed.length - wins;
       closedBody.innerHTML = closed.map(t => {
         const pnl = parseFloat(t.pnlPct);
         const up = pnl > 0;
@@ -987,7 +991,14 @@ async function refresh() {
           <td style="color:var(--dim)">\${t.exitReason}</td>
           <td style="color:var(--dim)">\${held}</td>
         </tr>\`;
-      }).join('');
+      }).join('')
+      + \`<tr style="border-top:2px solid var(--border);font-weight:bold">
+          <td>TOTAL (\${closed.length} trades)</td>
+          <td>\${wins}W / \${losses}L</td>
+          <td></td>
+          <td style="color:\${totalUp?'var(--green)':'var(--red)'}; font-size:14px">\${totalUp ? '+' : ''}$\${fmt(totalDollar)}</td>
+          <td colspan="2" style="color:var(--dim)">\${wins > 0 && losses === 0 ? 'Perfect day' : wins === 0 ? 'Rough day' : ''}</td>
+        </tr>\`;
     }
 
     // Activity feed
@@ -1890,22 +1901,22 @@ const AGGRESSIVE_HTML = `<!DOCTYPE html>
   <div class="stat-card" style="padding:14px 20px;">
     <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:10px;font-weight:bold">P&amp;L</div>
     <div style="display:flex;justify-content:space-around;gap:12px;">
-      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Today</div><div id="stat-today-pnl" style="display:inline-block;padding:3px 12px;border-radius:5px;font-weight:bold;font-size:20px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
-      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Total</div><div id="stat-total-pnl" style="display:inline-block;padding:3px 12px;border-radius:5px;font-weight:bold;font-size:20px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
+      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Today</div><div id="stat-today-pnl" style="display:inline-block;padding:6px 16px;border-radius:5px;font-weight:bold;font-size:26px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
+      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Total</div><div id="stat-total-pnl" style="display:inline-block;padding:6px 16px;border-radius:5px;font-weight:bold;font-size:26px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
     </div>
   </div>
   <div class="stat-card" style="padding:14px 20px;">
     <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:10px;font-weight:bold">Capital</div>
     <div style="display:flex;justify-content:space-around;gap:12px;">
-      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Deployed</div><div id="stat-deployed" style="display:inline-block;padding:3px 12px;border-radius:5px;font-weight:bold;font-size:20px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:#ff6d00">—</div></div>
-      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Positions</div><div id="stat-positions" style="display:inline-block;padding:3px 12px;border-radius:5px;font-weight:bold;font-size:20px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:#ff6d00">—</div></div>
+      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Deployed</div><div id="stat-deployed" style="display:inline-block;padding:6px 16px;border-radius:5px;font-weight:bold;font-size:26px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:#ff6d00">—</div></div>
+      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Positions</div><div id="stat-positions" style="display:inline-block;padding:6px 16px;border-radius:5px;font-weight:bold;font-size:26px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:#ff6d00">—</div></div>
     </div>
   </div>
   <div class="stat-card" style="padding:14px 20px;">
     <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:10px;font-weight:bold">Performance</div>
     <div style="display:flex;justify-content:space-around;gap:12px;">
-      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Win Rate</div><div id="stat-winrate" style="display:inline-block;padding:3px 12px;border-radius:5px;font-weight:bold;font-size:20px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
-      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Trades Today</div><div id="stat-today-trades" style="display:inline-block;padding:3px 12px;border-radius:5px;font-weight:bold;font-size:20px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
+      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Win Rate</div><div id="stat-winrate" style="display:inline-block;padding:6px 16px;border-radius:5px;font-weight:bold;font-size:26px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
+      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Trades Today</div><div id="stat-today-trades" style="display:inline-block;padding:6px 16px;border-radius:5px;font-weight:bold;font-size:26px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
     </div>
   </div>
 </div>
