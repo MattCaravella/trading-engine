@@ -241,26 +241,25 @@ async function getStatus() {
   const [api, sched, indices] = await Promise.all([getApiData(), Promise.resolve(getSchedulerInfo()), getIndexData()]);
 
   // Aggressive engine summary for main dashboard
-  let aggressive = null;
+  let aggressive = { active: false, positions: 0, deployed: 0, pnl: 0 };
   try {
     const aggStatePath = path.join(__dirname, 'trade_history/aggressive_state.json');
     if (fs.existsSync(aggStatePath)) {
       const aggState = JSON.parse(fs.readFileSync(aggStatePath, 'utf8'));
-      const aggPositionCount = Object.keys(aggState.aggressivePositions || {}).length;
-      // Get live deployed value from Alpaca
-      let deployed = 0;
+      const aggSymbols = new Set(Object.keys(aggState.aggressivePositions || {}));
+      const aggPositionCount = aggSymbols.size;
+      let deployed = 0, aggPnl = 0;
       try {
         const allPos = await alpaca('GET', '/positions');
         if (Array.isArray(allPos)) {
-          const aggSymbols = new Set(Object.keys(aggState.aggressivePositions || {}));
-          deployed = allPos.filter(p => aggSymbols.has(p.symbol)).reduce((s, p) => s + Math.abs(parseFloat(p.market_value || 0)), 0);
+          const aggPos = allPos.filter(p => aggSymbols.has(p.symbol));
+          deployed = aggPos.reduce((s, p) => s + Math.abs(parseFloat(p.market_value || 0)), 0);
+          aggPnl = aggPos.reduce((s, p) => s + parseFloat(p.unrealized_pl || 0), 0);
         }
       } catch {}
-      aggressive = { active: true, positions: aggPositionCount, deployed: Math.round(deployed) };
-    } else {
-      aggressive = { active: false, positions: 0, deployed: 0 };
+      aggressive = { active: true, positions: aggPositionCount, deployed: Math.round(deployed), pnl: parseFloat(aggPnl.toFixed(2)) };
     }
-  } catch { aggressive = { active: false, positions: 0, deployed: 0 }; }
+  } catch {}
 
   return {
     time: etTime(),
@@ -510,34 +509,34 @@ const HTML = `<!DOCTYPE html>
   </div>
 </div>
 
-<!-- P&L Banner -->
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border)">
-  <div class="panel" style="display:flex;align-items:center;justify-content:space-around;padding:14px 20px;flex-wrap:wrap;gap:12px">
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Today's P&amp;L</div>
-      <div id="banner-day-pnl" class="val-box val-box-blue" style="font-size:24px">—</div>
-    </div>
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Today %</div>
-      <div id="banner-day-pct" class="val-box val-box-blue" style="font-size:24px">—</div>
-    </div>
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Unrealized</div>
-      <div id="banner-unrealized" class="val-box val-box-blue" style="font-size:24px">—</div>
+<!-- P&L Banner: Combined / Main / Aggressive -->
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--border)">
+  <!-- Combined -->
+  <div class="panel" style="padding:12px 16px;">
+    <div style="font-size:10px;letter-spacing:2px;color:var(--accent);text-transform:uppercase;margin-bottom:8px;font-weight:bold">Combined</div>
+    <div style="display:flex;justify-content:space-between;gap:8px;">
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Today</div><div id="banner-day-pnl" class="val-box val-box-blue" style="font-size:20px">—</div></div>
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Today %</div><div id="banner-day-pct" class="val-box val-box-blue" style="font-size:20px">—</div></div>
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Overall</div><div id="banner-total-pnl" class="val-box val-box-blue" style="font-size:20px">—</div></div>
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Overall %</div><div id="banner-total-pct" class="val-box val-box-blue" style="font-size:20px">—</div></div>
     </div>
   </div>
-  <div class="panel" style="display:flex;align-items:center;justify-content:space-around;padding:14px 20px;flex-wrap:wrap;gap:12px">
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Overall P&amp;L</div>
-      <div id="banner-total-pnl" class="val-box val-box-blue" style="font-size:24px">—</div>
+  <!-- Main Engine -->
+  <div class="panel" style="padding:12px 16px;">
+    <div style="font-size:10px;letter-spacing:2px;color:var(--green);text-transform:uppercase;margin-bottom:8px;font-weight:bold">Main Engine (90%)</div>
+    <div style="display:flex;justify-content:space-between;gap:8px;">
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Today</div><div id="banner-main-day" class="val-box val-box-blue" style="font-size:20px">—</div></div>
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Unrealized</div><div id="banner-main-unrealized" class="val-box val-box-blue" style="font-size:20px">—</div></div>
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Positions</div><div id="banner-main-positions" class="val-box val-box-blue" style="font-size:20px">—</div></div>
     </div>
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Overall %</div>
-      <div id="banner-total-pct" class="val-box val-box-blue" style="font-size:24px">—</div>
-    </div>
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Starting Capital</div>
-      <div class="val-box val-box-blue" style="font-size:24px">$100,000</div>
+  </div>
+  <!-- Aggressive Engine -->
+  <div class="panel" style="padding:12px 16px;">
+    <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:8px;font-weight:bold">Aggressive (10%)</div>
+    <div style="display:flex;justify-content:space-between;gap:8px;">
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Today</div><div id="banner-agg-day" class="val-box val-box-blue" style="font-size:20px">—</div></div>
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Unrealized</div><div id="banner-agg-unrealized" class="val-box val-box-blue" style="font-size:20px">—</div></div>
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Positions</div><div id="banner-agg-positions" class="val-box val-box-blue" style="font-size:20px">—</div></div>
     </div>
   </div>
 </div>
@@ -795,11 +794,24 @@ async function refresh() {
       el.innerHTML = \`<span class="arrow">\${arrow(val)}</span> \${sign(val)}\${fmt(val)}%\`;
       el.style.fontSize = '24px';
     }
+    // Combined P&L (main + aggressive)
+    const aggPnl = data.aggressive?.pnl || 0;
+    const aggPositions = data.aggressive?.positions || 0;
+    const mainDayPnl = data.dayPnl - aggPnl;
     setPnl('banner-day-pnl',    data.dayPnl);
     setPct('banner-day-pct',    data.dayPnlPct);
-    setPnl('banner-unrealized', data.unrealizedPnl);
     setPnl('banner-total-pnl',  data.totalPnl);
     setPct('banner-total-pct',  data.totalPnlPct);
+    // Main engine breakdown
+    setPnl('banner-main-day', mainDayPnl);
+    setPnl('banner-main-unrealized', data.unrealizedPnl - aggPnl);
+    document.getElementById('banner-main-positions').textContent = (data.positions?.length || 0) - aggPositions;
+    document.getElementById('banner-main-positions').className = 'val-box val-box-blue';
+    // Aggressive engine breakdown
+    setPnl('banner-agg-day', aggPnl);
+    setPnl('banner-agg-unrealized', aggPnl);
+    document.getElementById('banner-agg-positions').textContent = aggPositions;
+    document.getElementById('banner-agg-positions').className = 'val-box val-box-blue';
 
     // Account
     document.getElementById('equity').textContent   = fmtDollar(data.equity);
