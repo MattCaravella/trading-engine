@@ -1904,48 +1904,34 @@ const AGGRESSIVE_HTML = `<!DOCTYPE html>
   </div>
 </div>
 
-<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--border);margin-bottom:1px;">
-  <div class="panel" style="display:flex;align-items:center;justify-content:space-around;padding:14px 20px;flex-wrap:wrap;gap:12px">
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Today's P&amp;L</div>
-      <div id="stat-today-pnl" class="val-box val-box-blue" style="font-size:24px">—</div>
-    </div>
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Total P&amp;L</div>
-      <div id="stat-total-pnl" class="val-box val-box-blue" style="font-size:24px">—</div>
-    </div>
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Unrealized</div>
-      <div id="stat-unrealized" class="val-box val-box-blue" style="font-size:24px">—</div>
-    </div>
+<div class="panel" style="display:flex;align-items:center;justify-content:space-around;padding:14px 20px;gap:12px;margin-bottom:1px;">
+  <div style="text-align:center">
+    <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Today's P&amp;L</div>
+    <div id="stat-today-pnl" class="val-box val-box-blue" style="font-size:24px">—</div>
   </div>
-  <div class="panel" style="display:flex;align-items:center;justify-content:space-around;padding:14px 20px;flex-wrap:wrap;gap:12px">
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Deployed</div>
-      <div id="stat-deployed" class="val-box val-box-blue" style="font-size:24px">—</div>
-    </div>
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Positions</div>
-      <div id="stat-positions" class="val-box val-box-blue" style="font-size:24px">—</div>
-    </div>
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Allocation</div>
-      <div class="val-box val-box-blue" style="font-size:24px">$10,000</div>
-    </div>
+  <div style="text-align:center">
+    <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Total P&amp;L</div>
+    <div id="stat-total-pnl" class="val-box val-box-blue" style="font-size:24px">—</div>
   </div>
-  <div class="panel" style="display:flex;align-items:center;justify-content:space-around;padding:14px 20px;flex-wrap:wrap;gap:12px">
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Win Rate</div>
-      <div id="stat-winrate" class="val-box val-box-blue" style="font-size:24px">—</div>
-    </div>
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Trades Today</div>
-      <div id="stat-today-trades" class="val-box val-box-blue" style="font-size:24px">—</div>
-    </div>
-    <div style="text-align:center">
-      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Avg Win</div>
-      <div id="stat-avg-win" class="val-box val-box-blue" style="font-size:24px">—</div>
-    </div>
+  <div style="text-align:center">
+    <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Deployed</div>
+    <div id="stat-deployed" class="val-box val-box-blue" style="font-size:24px">—</div>
+  </div>
+  <div style="text-align:center">
+    <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Allocation</div>
+    <div class="val-box val-box-blue" style="font-size:24px">$10,000</div>
+  </div>
+  <div style="text-align:center">
+    <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Positions</div>
+    <div id="stat-positions" class="val-box val-box-blue" style="font-size:24px">—</div>
+  </div>
+  <div style="text-align:center">
+    <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Win Rate</div>
+    <div id="stat-winrate" class="val-box val-box-blue" style="font-size:24px">—</div>
+  </div>
+  <div style="text-align:center">
+    <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Trades Today</div>
+    <div id="stat-today-trades" class="val-box val-box-blue" style="font-size:24px">—</div>
   </div>
 </div>
 
@@ -2142,13 +2128,6 @@ async function loadData() {
     tradesEl.className = 'val-box val-box-blue';
     tradesEl.style.fontSize = '24px';
 
-    const avgWinEl = document.getElementById('stat-avg-win');
-    if (avgWinEl) {
-      const aw = data.avgWin || 0;
-      avgWinEl.textContent = aw ? sign(aw) + fmt(aw) + '%' : '—';
-      avgWinEl.className = 'val-box val-box-blue';
-      avgWinEl.style.fontSize = '24px';
-    }
 
     // Panels
     renderPositions(data.positions || []);
