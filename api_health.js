@@ -96,6 +96,7 @@ function recordSuccess(apiName, dataCount) {
   entry.successCount++;
   if (typeof dataCount === 'number') entry.lastDataCount = dataCount;
   entry.status = computeStatus(entry);
+  persist(); // Write immediately so dashboard process can read
 }
 
 function recordError(apiName, errorMsg) {
@@ -105,6 +106,7 @@ function recordError(apiName, errorMsg) {
   entry.lastErrorMsg = (errorMsg || '').slice(0, 500);
   entry.errorCount++;
   entry.status = computeStatus(entry);
+  persist(); // Write immediately so dashboard process can read
 }
 
 function getHealth() {
@@ -147,4 +149,4 @@ setInterval(persist, PERSIST_INTERVAL_MS);
 // Also persist on process exit
 process.on('exit', persist);
 
-module.exports = { recordSuccess, recordError, getHealth, getOverallStatus };
+module.exports = { recordSuccess, recordError, getHealth, getOverallStatus, loadPersisted };

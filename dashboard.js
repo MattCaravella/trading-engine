@@ -294,7 +294,7 @@ async function getStatus() {
     indices,
     lastNewsRun: getLastNewsRun(),
     aggressive,
-    apiHealth: { overall: apiHealth.getOverallStatus(), summary: apiHealth.getHealth() },
+    apiHealth: { overall: (apiHealth.loadPersisted(), apiHealth.getOverallStatus()), summary: apiHealth.getHealth() },
     closedToday,
   };
 }
@@ -2748,6 +2748,8 @@ const server = http.createServer(async (req, res) => {
     res.end(NEWS_HTML);
   } else if (req.url === '/api/api-health') {
     try {
+      // Read fresh from file (scheduler process writes, dashboard process reads)
+      apiHealth.loadPersisted ? apiHealth.loadPersisted() : null;
       const data = { overall: apiHealth.getOverallStatus(), apis: apiHealth.getHealth(), timestamp: new Date().toISOString() };
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify(data));
