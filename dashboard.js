@@ -1904,14 +1904,14 @@ const AGGRESSIVE_HTML = `<!DOCTYPE html>
   </div>
 </div>
 
-<div style="background:var(--panel);border:1px solid var(--border);display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;justify-content:space-around;padding:14px 20px;margin-bottom:1px;">
-  <div style="text-align:center"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Today's P&amp;L</div><div id="stat-today-pnl" class="val-box val-box-blue" style="font-size:24px">—</div></div>
-  <div style="text-align:center"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Total P&amp;L</div><div id="stat-total-pnl" class="val-box val-box-blue" style="font-size:24px">—</div></div>
-  <div style="text-align:center"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Deployed</div><div id="stat-deployed" class="val-box val-box-blue" style="font-size:24px">—</div></div>
-  <div style="text-align:center"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Allocation</div><div class="val-box val-box-blue" style="font-size:24px">$10,000</div></div>
-  <div style="text-align:center"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Positions</div><div id="stat-positions" class="val-box val-box-blue" style="font-size:24px">—</div></div>
-  <div style="text-align:center"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Win Rate</div><div id="stat-winrate" class="val-box val-box-blue" style="font-size:24px">—</div></div>
-  <div style="text-align:center"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Trades Today</div><div id="stat-today-trades" class="val-box val-box-blue" style="font-size:24px">—</div></div>
+<div style="background:var(--panel);border:1px solid var(--border);display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;justify-content:space-around;padding:16px 24px;margin-bottom:1px;">
+  <div style="text-align:center;flex:1"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Today's P&amp;L</div><div id="stat-today-pnl" class="val-box val-box-blue" style="font-size:24px;padding:8px 20px;min-width:120px;justify-content:center">—</div></div>
+  <div style="text-align:center;flex:1"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Total P&amp;L</div><div id="stat-total-pnl" class="val-box val-box-blue" style="font-size:24px;padding:8px 20px;min-width:120px;justify-content:center">—</div></div>
+  <div style="text-align:center;flex:1"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Deployed</div><div id="stat-deployed" class="val-box val-box-blue" style="font-size:24px;padding:8px 20px;min-width:120px;justify-content:center">—</div></div>
+  <div style="text-align:center;flex:1"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Allocation</div><div class="val-box val-box-blue" style="font-size:24px;padding:8px 20px;min-width:120px;justify-content:center">$10,000</div></div>
+  <div style="text-align:center;flex:1"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Positions</div><div id="stat-positions" class="val-box val-box-blue" style="font-size:24px;padding:8px 20px;min-width:80px;justify-content:center">—</div></div>
+  <div style="text-align:center;flex:1"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Win Rate</div><div id="stat-winrate" class="val-box val-box-blue" style="font-size:24px;padding:8px 20px;min-width:80px;justify-content:center">—</div></div>
+  <div style="text-align:center;flex:1"><div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Trades Today</div><div id="stat-today-trades" class="val-box val-box-blue" style="font-size:24px;padding:8px 20px;min-width:80px;justify-content:center">—</div></div>
 </div>
 
 <!-- Aggressive P&L Chart -->
