@@ -1905,25 +1905,46 @@ const AGGRESSIVE_HTML = `<!DOCTYPE html>
 </div>
 
 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--border);margin-bottom:1px;">
-  <div class="panel" style="padding:14px 20px;">
-    <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:8px;font-weight:bold">P&amp;L</div>
-    <div style="display:flex;justify-content:space-between;gap:8px;">
-      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Today</div><div id="stat-today-pnl" class="val-box val-box-blue" style="font-size:20px">—</div></div>
-      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Total</div><div id="stat-total-pnl" class="val-box val-box-blue" style="font-size:20px">—</div></div>
+  <div class="panel" style="display:flex;align-items:center;justify-content:space-around;padding:14px 20px;flex-wrap:wrap;gap:12px">
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Today's P&amp;L</div>
+      <div id="stat-today-pnl" class="val-box val-box-blue" style="font-size:24px">—</div>
+    </div>
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Total P&amp;L</div>
+      <div id="stat-total-pnl" class="val-box val-box-blue" style="font-size:24px">—</div>
+    </div>
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Unrealized</div>
+      <div id="stat-unrealized" class="val-box val-box-blue" style="font-size:24px">—</div>
     </div>
   </div>
-  <div class="panel" style="padding:14px 20px;">
-    <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:8px;font-weight:bold">Capital</div>
-    <div style="display:flex;justify-content:space-between;gap:8px;">
-      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Deployed</div><div id="stat-deployed" class="val-box val-box-blue" style="font-size:20px">—</div></div>
-      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Positions</div><div id="stat-positions" class="val-box val-box-blue" style="font-size:20px">—</div></div>
+  <div class="panel" style="display:flex;align-items:center;justify-content:space-around;padding:14px 20px;flex-wrap:wrap;gap:12px">
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Deployed</div>
+      <div id="stat-deployed" class="val-box val-box-blue" style="font-size:24px">—</div>
+    </div>
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Positions</div>
+      <div id="stat-positions" class="val-box val-box-blue" style="font-size:24px">—</div>
+    </div>
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Allocation</div>
+      <div class="val-box val-box-blue" style="font-size:24px">$10,000</div>
     </div>
   </div>
-  <div class="panel" style="padding:14px 20px;">
-    <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:8px;font-weight:bold">Performance</div>
-    <div style="display:flex;justify-content:space-between;gap:8px;">
-      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Win Rate</div><div id="stat-winrate" class="val-box val-box-blue" style="font-size:20px">—</div></div>
-      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Trades Today</div><div id="stat-today-trades" class="val-box val-box-blue" style="font-size:20px">—</div></div>
+  <div class="panel" style="display:flex;align-items:center;justify-content:space-around;padding:14px 20px;flex-wrap:wrap;gap:12px">
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Win Rate</div>
+      <div id="stat-winrate" class="val-box val-box-blue" style="font-size:24px">—</div>
+    </div>
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Trades Today</div>
+      <div id="stat-today-trades" class="val-box val-box-blue" style="font-size:24px">—</div>
+    </div>
+    <div style="text-align:center">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:6px">Avg Win</div>
+      <div id="stat-avg-win" class="val-box val-box-blue" style="font-size:24px">—</div>
     </div>
   </div>
 </div>
@@ -2085,27 +2106,49 @@ async function loadData() {
     // Allocation
     document.getElementById('alloc-display').textContent = '$' + (data.allocation||10000).toLocaleString() + ' (10%)';
 
-    // Stats bar — use val-box classes matching main dashboard exactly
+    // Stats bar — arrows + colored boxes matching main dashboard exactly
+    function setAggPnl(id, val) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const v = parseFloat(val) || 0;
+      const up = v >= 0;
+      const arrow = up ? '▲' : '▼';
+      el.textContent = arrow + ' ' + sign(v) + fmtDollar(v);
+      el.className = 'val-box ' + (up ? 'val-box-green' : 'val-box-red');
+      el.style.fontSize = '24px';
+    }
+
+    setAggPnl('stat-today-pnl', data.todayPnl);
+    setAggPnl('stat-total-pnl', data.totalPnl);
+    setAggPnl('stat-unrealized', data.todayPnl); // unrealized = today for now
+
     document.getElementById('stat-deployed').textContent = '$' + (data.deployed||0).toLocaleString();
     document.getElementById('stat-deployed').className = 'val-box val-box-blue';
-
-    const todayPnl = data.todayPnl || 0;
-    const todayEl = document.getElementById('stat-today-pnl');
-    todayEl.textContent = sign(todayPnl) + fmtDollar(todayPnl);
-    todayEl.className = 'val-box ' + (todayPnl >= 0 ? 'val-box-green' : 'val-box-red');
-
-    const totalPnl = data.totalPnl || 0;
-    const totalEl = document.getElementById('stat-total-pnl');
-    totalEl.textContent = sign(totalPnl) + fmtDollar(totalPnl);
-    totalEl.className = 'val-box ' + (totalPnl >= 0 ? 'val-box-green' : 'val-box-red');
+    document.getElementById('stat-deployed').style.fontSize = '24px';
 
     const wr = data.winRate || 0;
     const wrEl = document.getElementById('stat-winrate');
     wrEl.textContent = wr.toFixed(1) + '%';
-    wrEl.className = 'value ' + (wr >= 50 ? 'green' : wr >= 30 ? 'orange' : 'red');
+    wrEl.className = 'val-box ' + (wr >= 50 ? 'val-box-green' : 'val-box-blue');
+    wrEl.style.fontSize = '24px';
 
-    document.getElementById('stat-positions').textContent = (data.positions||[]).length;
-    document.getElementById('stat-today-trades').textContent = data.todayTrades || 0;
+    const posEl = document.getElementById('stat-positions');
+    posEl.textContent = (data.positions||[]).length;
+    posEl.className = 'val-box val-box-blue';
+    posEl.style.fontSize = '24px';
+
+    const tradesEl = document.getElementById('stat-today-trades');
+    tradesEl.textContent = data.todayTrades || 0;
+    tradesEl.className = 'val-box val-box-blue';
+    tradesEl.style.fontSize = '24px';
+
+    const avgWinEl = document.getElementById('stat-avg-win');
+    if (avgWinEl) {
+      const aw = data.avgWin || 0;
+      avgWinEl.textContent = aw ? sign(aw) + fmt(aw) + '%' : '—';
+      avgWinEl.className = 'val-box val-box-blue';
+      avgWinEl.style.fontSize = '24px';
+    }
 
     // Panels
     renderPositions(data.positions || []);
