@@ -1813,6 +1813,13 @@ const AGGRESSIVE_HTML = `<!DOCTYPE html>
   .btn:hover { opacity:0.85; }
   .btn-accent { background:var(--accent); color:#fff; }
 
+  /* val-box classes — match main dashboard exactly */
+  .val-box { display:inline-flex; align-items:center; gap:6px; padding:6px 14px; border-radius:6px; font-weight:bold; letter-spacing:0.5px; backdrop-filter:blur(4px); }
+  .val-box-green { background:rgba(0,230,118,0.12); border:1px solid rgba(0,230,118,0.30); color:var(--green); }
+  .val-box-red { background:rgba(255,82,82,0.12); border:1px solid rgba(255,82,82,0.30); color:var(--red); }
+  .val-box-blue { background:rgba(41,121,255,0.12); border:1px solid rgba(41,121,255,0.30); color:#7eb3ff; }
+  .panel { background:var(--panel); border:1px solid var(--border); }
+
   .stats-bar { display:flex; gap:12px; padding:12px 24px; flex-wrap:wrap; }
   .stat-card { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:12px 18px; min-width:140px; flex:1; }
   .stat-card .label { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
@@ -1898,25 +1905,25 @@ const AGGRESSIVE_HTML = `<!DOCTYPE html>
 </div>
 
 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--border);margin-bottom:1px;">
-  <div class="stat-card" style="padding:14px 20px;">
-    <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:10px;font-weight:bold">P&amp;L</div>
-    <div style="display:flex;justify-content:space-around;gap:12px;">
-      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Today</div><div id="stat-today-pnl" style="display:inline-block;padding:6px 16px;border-radius:5px;font-weight:bold;font-size:26px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
-      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Total</div><div id="stat-total-pnl" style="display:inline-block;padding:6px 16px;border-radius:5px;font-weight:bold;font-size:26px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
+  <div class="panel" style="padding:14px 20px;">
+    <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:8px;font-weight:bold">P&amp;L</div>
+    <div style="display:flex;justify-content:space-between;gap:8px;">
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Today</div><div id="stat-today-pnl" class="val-box val-box-blue" style="font-size:20px">—</div></div>
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Total</div><div id="stat-total-pnl" class="val-box val-box-blue" style="font-size:20px">—</div></div>
     </div>
   </div>
-  <div class="stat-card" style="padding:14px 20px;">
-    <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:10px;font-weight:bold">Capital</div>
-    <div style="display:flex;justify-content:space-around;gap:12px;">
-      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Deployed</div><div id="stat-deployed" style="display:inline-block;padding:6px 16px;border-radius:5px;font-weight:bold;font-size:26px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:#ff6d00">—</div></div>
-      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Positions</div><div id="stat-positions" style="display:inline-block;padding:6px 16px;border-radius:5px;font-weight:bold;font-size:26px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:#ff6d00">—</div></div>
+  <div class="panel" style="padding:14px 20px;">
+    <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:8px;font-weight:bold">Capital</div>
+    <div style="display:flex;justify-content:space-between;gap:8px;">
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Deployed</div><div id="stat-deployed" class="val-box val-box-blue" style="font-size:20px">—</div></div>
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Positions</div><div id="stat-positions" class="val-box val-box-blue" style="font-size:20px">—</div></div>
     </div>
   </div>
-  <div class="stat-card" style="padding:14px 20px;">
-    <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:10px;font-weight:bold">Performance</div>
-    <div style="display:flex;justify-content:space-around;gap:12px;">
-      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Win Rate</div><div id="stat-winrate" style="display:inline-block;padding:6px 16px;border-radius:5px;font-weight:bold;font-size:26px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
-      <div style="text-align:center"><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:4px">Trades Today</div><div id="stat-today-trades" style="display:inline-block;padding:6px 16px;border-radius:5px;font-weight:bold;font-size:26px;background:rgba(255,109,0,0.08);border:1px solid rgba(255,109,0,0.2);color:var(--bright)">—</div></div>
+  <div class="panel" style="padding:14px 20px;">
+    <div style="font-size:10px;letter-spacing:2px;color:#ff6d00;text-transform:uppercase;margin-bottom:8px;font-weight:bold">Performance</div>
+    <div style="display:flex;justify-content:space-between;gap:8px;">
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Win Rate</div><div id="stat-winrate" class="val-box val-box-blue" style="font-size:20px">—</div></div>
+      <div><div style="font-size:9px;color:var(--dim);text-transform:uppercase;margin-bottom:3px">Trades Today</div><div id="stat-today-trades" class="val-box val-box-blue" style="font-size:20px">—</div></div>
     </div>
   </div>
 </div>
@@ -2078,22 +2085,19 @@ async function loadData() {
     // Allocation
     document.getElementById('alloc-display').textContent = '$' + (data.allocation||10000).toLocaleString() + ' (10%)';
 
-    // Stats bar — with dynamic coloring matching main dashboard style
+    // Stats bar — use val-box classes matching main dashboard exactly
     document.getElementById('stat-deployed').textContent = '$' + (data.deployed||0).toLocaleString();
+    document.getElementById('stat-deployed').className = 'val-box val-box-blue';
 
     const todayPnl = data.todayPnl || 0;
     const todayEl = document.getElementById('stat-today-pnl');
     todayEl.textContent = sign(todayPnl) + fmtDollar(todayPnl);
-    todayEl.style.color = todayPnl >= 0 ? 'var(--green)' : 'var(--red)';
-    todayEl.style.borderColor = todayPnl >= 0 ? 'rgba(0,230,118,0.3)' : 'rgba(255,82,82,0.3)';
-    todayEl.style.background = todayPnl >= 0 ? 'rgba(0,230,118,0.1)' : 'rgba(255,82,82,0.1)';
+    todayEl.className = 'val-box ' + (todayPnl >= 0 ? 'val-box-green' : 'val-box-red');
 
     const totalPnl = data.totalPnl || 0;
     const totalEl = document.getElementById('stat-total-pnl');
     totalEl.textContent = sign(totalPnl) + fmtDollar(totalPnl);
-    totalEl.style.color = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
-    totalEl.style.borderColor = totalPnl >= 0 ? 'rgba(0,230,118,0.3)' : 'rgba(255,82,82,0.3)';
-    totalEl.style.background = totalPnl >= 0 ? 'rgba(0,230,118,0.1)' : 'rgba(255,82,82,0.1)';
+    totalEl.className = 'val-box ' + (totalPnl >= 0 ? 'val-box-green' : 'val-box-red');
 
     const wr = data.winRate || 0;
     const wrEl = document.getElementById('stat-winrate');
